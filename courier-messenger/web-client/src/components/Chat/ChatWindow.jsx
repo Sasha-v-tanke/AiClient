@@ -85,6 +85,19 @@ const ChatWindow = ({ chat }) => {
     );
 
     unreadMessages.forEach((message) => {
+      setMessages((prev) =>
+        prev.map((item) =>
+          item._id === message._id
+            ? {
+                ...item,
+                readBy: (item.readBy || []).some((entry) => entry.user === user._id)
+                  ? item.readBy
+                  : [...(item.readBy || []), { user: user._id }],
+              }
+            : item
+        )
+      );
+
       messageAPI.markRead(message._id).catch((error) => {
         console.error('Ошибка отметки прочтения:', error);
       });

@@ -13,6 +13,19 @@ const ChatList = ({ activeChat, onSelectChat }) => {
   const { user } = useAuth();
   const socket = useSocket();
 
+  const getUnreadCount = (chat) => {
+    if (!user?._id || !chat.lastMessage) return 0;
+
+    const isOwnMessage = chat.lastMessage.sender?._id === user._id;
+    if (isOwnMessage) return 0;
+
+    const isReadByCurrentUser = chat.lastMessage.readBy?.some(
+      (entry) => entry.user === user._id
+    );
+
+    return isReadByCurrentUser ? 0 : 1;
+  };
+
   const fetchChats = async () => {
     try {
       const response = await chatAPI.getAll();
@@ -171,6 +184,9 @@ const ChatList = ({ activeChat, onSelectChat }) => {
             <div className="chat-time">
               {formatTime(chat.updatedAt)}
             </div>
+            {getUnreadCount(chat) > 0 && (
+              <span className="chat-badge">{getUnreadCount(chat)}</span>
+            )}
             {chat.orderRef && (
               <span className={`order-status status-${chat.orderRef.status}`}>
                 {chat.orderRef.status}
