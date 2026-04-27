@@ -95,12 +95,26 @@ router.post(
 // PUT /api/messages/:messageId/read — отметить как прочитанное
 router.put('/:messageId/read', protect, async (req, res) => {
   try {
-    const message = await Message.findById(req.params.messageId);
+    const message = await Message.findById(req.params.messageId).populate(
+      'sender',
+      'username role avatar'
+    );
 
     if (!message) {
       return res
         .status(404)
         .json({ success: false, message: 'Сообщение не найдено' });
+    }
+
+    const chat = await Chat.findOne({
+      _id: message.chat,
+      participants: req.user._id,
+    });
+
+    if (!chat) {
+      return res
+        .status(403)
+        .json({ success: false, message: 'Нет доступа к сообщению' });
     }
 
     const alreadyRead = message.readBy.some(
@@ -110,6 +124,16 @@ router.put('/:messageId/read', protect, async (req, res) => {
     if (!alreadyRead) {
       message.readBy.push({ user: req.user._id });
       await message.save();
+      await message.populate('sender', 'username role avatar');
+
+      const io = req.app.get('io');
+      if (io) {
+        io.to(`chat:${message.chat}`).emit('message_read', {
+          messageId: message._id,
+          userId: req.user._id,
+          readBy: message.readBy,
+        });
+      }
     }
 
     res.json({ success: true, data: message });

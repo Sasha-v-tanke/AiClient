@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { messageAPI } from '../../api/api';
 import { useSocket } from '../../context/SocketContext';
+import { useAuth } from '../../context/AuthContext';
 import MessageBubble from './MessageBubble';
 
 const ChatWindow = ({ chat }) => {
@@ -10,6 +11,7 @@ const ChatWindow = ({ chat }) => {
   const [typing, setTyping] = useState(null);
   const messagesEndRef = useRef(null);
   const socket = useSocket();
+  const { user } = useAuth();
 
   const fetchMessages = async () => {
     try {
@@ -30,8 +32,21 @@ const ChatWindow = ({ chat }) => {
 
       socket.on('new_message', (message) => {
         if (message.chat === chat._id) {
-          setMessages((prev) => [...prev, message]);
+          setMessages((prev) => {
+            if (prev.some((item) => item._id === message._id)) {
+              return prev;
+            }
+            return [...prev, message];
+          });
         }
+      });
+
+      socket.on('message_read', ({ messageId, readBy }) => {
+        setMessages((prev) =>
+          prev.map((message) =>
+            message._id === messageId ? { ...message, readBy } : message
+          )
+        );
       });
 
       socket.on('user_typing', ({ username, chatId }) => {
@@ -50,6 +65,7 @@ const ChatWindow = ({ chat }) => {
       return () => {
         socket.emit('leave_chat', chat._id);
         socket.off('new_message');
+        socket.off('message_read');
         socket.off('user_typing');
         socket.off('user_stop_typing');
       };
@@ -59,6 +75,21 @@ const ChatWindow = ({ chat }) => {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    const unreadMessages = messages.filter(
+      (message) =>
+        message.sender?._id &&
+        message.sender._id !== user?._id &&
+        !message.readBy?.some((entry) => entry.user === user?._id)
+    );
+
+    unreadMessages.forEach((message) => {
+      messageAPI.markRead(message._id).catch((error) => {
+        console.error('Ошибка отметки прочтения:', error);
+      });
+    });
+  }, [messages, user?._id]);
 
   const handleSend = async (e) => {
     e.preventDefault();
