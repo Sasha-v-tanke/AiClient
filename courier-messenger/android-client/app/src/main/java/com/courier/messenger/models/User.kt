@@ -17,6 +17,12 @@ data class AuthResponse(
     val message: String? = null
 )
 
+data class MeResponse(
+    val success: Boolean,
+    val data: User? = null,
+    val message: String? = null
+)
+
 data class AuthData(
     val user: User,
     val token: String

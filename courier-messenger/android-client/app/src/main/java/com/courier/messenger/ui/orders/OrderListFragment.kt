@@ -188,7 +188,6 @@ class OrderAdapter(
         private fun getNextStatuses(order: Order): List<String> {
             val role = currentUser?.role ?: return emptyList()
             return when (order.status) {
-                "created" -> if (role == "courier") listOf("assigned") else emptyList()
                 "assigned" -> if (role == "courier") listOf("picked_up") else emptyList()
                 "picked_up" -> if (role == "courier") listOf("in_transit") else emptyList()
                 "in_transit" -> if (role == "courier") listOf("delivered", "problem") else emptyList()

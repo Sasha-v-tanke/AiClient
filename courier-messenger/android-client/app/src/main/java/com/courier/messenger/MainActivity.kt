@@ -52,7 +52,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 val api = RetrofitClient.getApiService()
                 val response = api.getMe()
-                if (!response.isSuccessful || response.body()?.success != true) {
+                if (!response.isSuccessful || response.body()?.success != true || response.body()?.data == null) {
                     logout()
                 }
             } catch (e: Exception) {

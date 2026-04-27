@@ -130,8 +130,8 @@ class MessageAdapter(
     override fun getItemViewType(position: Int): Int {
         val msg = messages[position]
         return when {
-            msg.type == "system" -> TYPE_SYSTEM
-            msg.sender._id == currentUserId -> TYPE_SENT
+            msg.messageType == "system" || msg.messageType == "status_update" -> TYPE_SYSTEM
+            msg.sender?._id == currentUserId -> TYPE_SENT
             else -> TYPE_RECEIVED
         }
     }
@@ -185,7 +185,7 @@ class MessageAdapter(
     ) : RecyclerView.ViewHolder(binding.root) {
         fun bind(msg: Message) {
             binding.tvContent.text = msg.content
-            binding.tvTime.text = formatTime(msg.createdAt)
+            binding.tvTime.text = formatTime(msg.timestamp)
         }
     }
 
@@ -193,9 +193,9 @@ class MessageAdapter(
         private val binding: ItemMessageReceivedBinding
     ) : RecyclerView.ViewHolder(binding.root) {
         fun bind(msg: Message) {
-            binding.tvSender.text = msg.sender.username
+            binding.tvSender.text = msg.sender?.username ?: "Система"
             binding.tvContent.text = msg.content
-            binding.tvTime.text = formatTime(msg.createdAt)
+            binding.tvTime.text = formatTime(msg.timestamp)
         }
     }
 

@@ -14,7 +14,7 @@ interface ApiService {
     suspend fun register(@Body request: RegisterRequest): Response<AuthResponse>
 
     @GET("api/auth/me")
-    suspend fun getMe(): Response<AuthResponse>
+    suspend fun getMe(): Response<MeResponse>
 
     @POST("api/auth/logout")
     suspend fun logout(): Response<AuthResponse>
@@ -46,17 +46,17 @@ interface ApiService {
     ): Response<OrderListResponse>
 
     @POST("api/orders")
-    suspend fun createOrder(@Body order: Map<String, Any>): Response<OrderListResponse>
+    suspend fun createOrder(@Body order: Map<String, Any>): Response<OrderResponse>
 
     @PUT("api/orders/{orderId}/status")
     suspend fun updateOrderStatus(
         @Path("orderId") orderId: String,
         @Body request: StatusUpdateRequest
-    ): Response<OrderListResponse>
+    ): Response<OrderActionResponse>
 
     @PUT("api/orders/{orderId}/assign")
     suspend fun assignCourier(
         @Path("orderId") orderId: String,
         @Body body: Map<String, String>
-    ): Response<OrderListResponse>
+    ): Response<OrderActionResponse>
 }

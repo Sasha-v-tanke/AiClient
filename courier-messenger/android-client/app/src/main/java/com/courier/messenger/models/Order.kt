@@ -31,6 +31,17 @@ data class OrderListResponse(
     val data: List<Order>
 )
 
+data class OrderResponse(
+    val success: Boolean,
+    val data: Order
+)
+
+data class OrderActionResponse(
+    val success: Boolean,
+    val data: Map<String, Any>? = null,
+    val message: String? = null
+)
+
 data class StatusUpdateRequest(
     val newStatus: String,
     val note: String? = null

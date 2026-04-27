@@ -31,18 +31,15 @@ class ChatViewModel : ViewModel() {
 
     private val newMessageListener: (Any) -> Unit = { data ->
         try {
-            val json = data as? JSONObject ?: return@it
-            val chatId = json.optString("chat")
-            if (chatId == currentChatId) {
-                // Add to messages
-                val currentMessages = _messages.value?.toMutableList() ?: mutableListOf()
-                // Note: proper parsing would be done here
-                _messages.postValue(currentMessages)
+            val json = data as? JSONObject
+            val chatId = json?.optString("chat")
+            if (!chatId.isNullOrBlank() && chatId == currentChatId) {
+                loadMessages(chatId)
+            } else {
+                loadChats()
             }
-            // Refresh chats to update last message
-            loadChats()
         } catch (e: Exception) {
-            // ignore parse errors
+            loadChats()
         }
     }
 
