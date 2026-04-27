@@ -1,11 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { chatAPI } from '../../api/api';
+import { chatAPI, userAPI } from '../../api/api';
 import { useAuth } from '../../context/AuthContext';
 import { useSocket } from '../../context/SocketContext';
 
 const ChatList = ({ activeChat, onSelectChat }) => {
   const [chats, setChats] = useState([]);
+  const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [selectedUserId, setSelectedUserId] = useState('');
+  const [error, setError] = useState('');
   const { user } = useAuth();
   const socket = useSocket();
 
@@ -20,9 +24,24 @@ const ChatList = ({ activeChat, onSelectChat }) => {
     }
   };
 
+  const fetchUsers = async () => {
+    try {
+      const response = await userAPI.getAll();
+      setUsers(response.data.data.filter((item) => item._id !== user?._id));
+    } catch (err) {
+      console.error('Ошибка загрузки пользователей:', err);
+    }
+  };
+
   useEffect(() => {
     fetchChats();
   }, []);
+
+  useEffect(() => {
+    if (user?._id) {
+      fetchUsers();
+    }
+  }, [user?._id]);
 
   useEffect(() => {
     if (socket) {
@@ -70,6 +89,28 @@ const ChatList = ({ activeChat, onSelectChat }) => {
     });
   };
 
+  const handleCreateChat = async (e) => {
+    e.preventDefault();
+    if (!selectedUserId) return;
+
+    try {
+      setCreating(true);
+      setError('');
+      const response = await chatAPI.create({
+        participants: [selectedUserId],
+        type: 'direct',
+      });
+      const createdChat = response.data.data;
+      await fetchChats();
+      onSelectChat(createdChat);
+      setSelectedUserId('');
+    } catch (err) {
+      setError(err.response?.data?.message || 'Не удалось создать чат');
+    } finally {
+      setCreating(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="empty-state">
@@ -79,19 +120,39 @@ const ChatList = ({ activeChat, onSelectChat }) => {
     );
   }
 
-  if (chats.length === 0) {
-    return (
-      <div className="empty-state">
-        <i className="fas fa-comments"></i>
-        <h3>Нет чатов</h3>
-        <p>Начните новый диалог</p>
-      </div>
-    );
-  }
-
   return (
     <div>
-      {chats.map((chat) => (
+      <form className="chat-create-form" onSubmit={handleCreateChat}>
+        <select
+          className="chat-create-select"
+          value={selectedUserId}
+          onChange={(e) => setSelectedUserId(e.target.value)}
+        >
+          <option value="">Выберите пользователя для чата</option>
+          {users.map((item) => (
+            <option key={item._id} value={item._id}>
+              {item.username} ({item.role})
+            </option>
+          ))}
+        </select>
+        <button
+          type="submit"
+          className="chat-create-button"
+          disabled={!selectedUserId || creating}
+        >
+          {creating ? 'Создание...' : 'Новый чат'}
+        </button>
+        {error && <div className="chat-create-error">{error}</div>}
+      </form>
+
+      {chats.length === 0 ? (
+        <div className="empty-state">
+          <i className="fas fa-comments"></i>
+          <h3>Нет чатов</h3>
+          <p>Начните новый диалог</p>
+        </div>
+      ) : (
+        chats.map((chat) => (
         <div
           key={chat._id}
           className={`chat-item ${activeChat === chat._id ? 'active' : ''}`}
@@ -117,7 +178,8 @@ const ChatList = ({ activeChat, onSelectChat }) => {
             )}
           </div>
         </div>
-      ))}
+        ))
+      )}
     </div>
   );
 };

@@ -139,7 +139,7 @@ class ChatAdapter(
             binding.tvLastMessage.text = chat.lastMessage?.content ?: "Нет сообщений"
 
             // Время
-            chat.lastMessage?.createdAt?.let { dateStr ->
+            chat.lastMessage?.timestamp?.let { dateStr ->
                 try {
                     val inputFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.getDefault())
                     inputFormat.timeZone = TimeZone.getTimeZone("UTC")
@@ -149,19 +149,14 @@ class ChatAdapter(
                 } catch (e: Exception) {
                     binding.tvTime.text = ""
                 }
+            } ?: run {
+                binding.tvTime.text = ""
             }
 
             // Аватар — инициалы
             binding.tvAvatar.text = title.firstOrNull()?.uppercaseChar()?.toString() ?: "?"
 
-            // Счётчик непрочитанных
-            val unreadCount = chat.unreadCount ?: 0
-            if (unreadCount > 0) {
-                binding.tvBadge.visibility = View.VISIBLE
-                binding.tvBadge.text = if (unreadCount > 99) "99+" else unreadCount.toString()
-            } else {
-                binding.tvBadge.visibility = View.GONE
-            }
+            binding.tvBadge.visibility = View.GONE
 
             binding.root.setOnClickListener { onChatClick(chat) }
         }
