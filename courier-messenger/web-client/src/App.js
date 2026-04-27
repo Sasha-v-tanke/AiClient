@@ -15,6 +15,13 @@ import './styles/main.css';
 
 const MainApp = () => {
   const [activeChat, setActiveChat] = useState(null);
+  const [readStateVersion, setReadStateVersion] = useState(0);
+
+  const handleMessagesRead = (chatId) => {
+    if (activeChat?._id === chatId) {
+      setReadStateVersion((prev) => prev + 1);
+    }
+  };
 
   return (
     <SocketProvider>
@@ -22,9 +29,10 @@ const MainApp = () => {
         <Sidebar
           activeChat={activeChat?._id}
           onSelectChat={setActiveChat}
+          readStateVersion={readStateVersion}
         />
         {activeChat ? (
-          <ChatWindow chat={activeChat} />
+          <ChatWindow chat={activeChat} onMessagesRead={handleMessagesRead} />
         ) : (
           <div className="chat-window">
             <div className="empty-state">
