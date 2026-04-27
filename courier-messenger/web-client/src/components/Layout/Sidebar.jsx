@@ -3,7 +3,7 @@ import { useAuth } from '../../context/AuthContext';
 import ChatList from '../Chat/ChatList';
 import OrderList from '../Orders/OrderList';
 
-const Sidebar = ({ activeChat, onSelectChat }) => {
+const Sidebar = ({ activeChat, onSelectChat, readStateVersion }) => {
   const [activeTab, setActiveTab] = useState('chats');
   const { user, logout } = useAuth();
 
@@ -49,7 +49,11 @@ const Sidebar = ({ activeChat, onSelectChat }) => {
 
       <div className="sidebar-content">
         {activeTab === 'chats' ? (
-          <ChatList activeChat={activeChat} onSelectChat={onSelectChat} />
+          <ChatList
+            activeChat={activeChat}
+            onSelectChat={onSelectChat}
+            readStateVersion={readStateVersion}
+          />
         ) : (
           <OrderList />
         )}

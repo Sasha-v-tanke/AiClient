@@ -3,7 +3,7 @@ import { chatAPI, userAPI } from '../../api/api';
 import { useAuth } from '../../context/AuthContext';
 import { useSocket } from '../../context/SocketContext';
 
-const ChatList = ({ activeChat, onSelectChat }) => {
+const ChatList = ({ activeChat, onSelectChat, readStateVersion = 0 }) => {
   const [chats, setChats] = useState([]);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -49,6 +49,12 @@ const ChatList = ({ activeChat, onSelectChat }) => {
   useEffect(() => {
     fetchChats();
   }, []);
+
+  useEffect(() => {
+    if (readStateVersion > 0) {
+      fetchChats();
+    }
+  }, [readStateVersion]);
 
   useEffect(() => {
     if (user?._id) {

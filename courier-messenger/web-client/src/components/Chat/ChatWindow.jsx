@@ -4,7 +4,7 @@ import { useSocket } from '../../context/SocketContext';
 import { useAuth } from '../../context/AuthContext';
 import MessageBubble from './MessageBubble';
 
-const ChatWindow = ({ chat }) => {
+const ChatWindow = ({ chat, onMessagesRead }) => {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
@@ -98,11 +98,15 @@ const ChatWindow = ({ chat }) => {
         )
       );
 
-      messageAPI.markRead(message._id).catch((error) => {
-        console.error('Ошибка отметки прочтения:', error);
-      });
+      messageAPI.markRead(message._id)
+        .then(() => {
+          onMessagesRead?.(chat._id, [message._id]);
+        })
+        .catch((error) => {
+          console.error('Ошибка отметки прочтения:', error);
+        });
     });
-  }, [messages, user?._id]);
+  }, [messages, user?._id, chat._id, onMessagesRead]);
 
   const handleSend = async (e) => {
     e.preventDefault();
