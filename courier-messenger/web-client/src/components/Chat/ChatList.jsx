@@ -65,11 +65,16 @@ const ChatList = ({ activeChat, onSelectChat, readStateVersion = 0 }) => {
   useEffect(() => {
     if (socket) {
       socket.on('new_message', () => {
-        fetchChats(); // Обновляем список при новом сообщении
+        fetchChats();
+      });
+
+      socket.on('message_read', () => {
+        fetchChats();
       });
 
       return () => {
         socket.off('new_message');
+        socket.off('message_read');
       };
     }
   }, [socket]);
