@@ -65,10 +65,9 @@ const ChatWindow = ({ chat }) => {
     if (!newMessage.trim()) return;
 
     try {
-      const response = await messageAPI.send(chat._id, {
+      await messageAPI.send(chat._id, {
         content: newMessage.trim(),
       });
-      setMessages((prev) => [...prev, response.data.data]);
       setNewMessage('');
 
       if (socket) {
