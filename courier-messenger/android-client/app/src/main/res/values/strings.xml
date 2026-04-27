@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Courier Messenger</string>
+    <string-array name="roles_array">
+        <item>Курьер</item>
+        <item>Диспетчер</item>
+    </string-array>
+</resources>
