@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+.npm
+
+# Environment
+.env
+.env.local
+
+# Build
+build/
+dist/
+web-client/build/
+
+# Android
+android-client/.gradle/
+android-client/app/build/
+android-client/build/
+android-client/local.properties
+*.apk
+*.aab
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
