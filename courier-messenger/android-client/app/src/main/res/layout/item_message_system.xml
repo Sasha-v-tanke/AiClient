@@ -14,20 +14,12 @@
         android:paddingVertical="6dp">
 
         <TextView
-            android:id="@+id/tvMessageContent"
+            android:id="@+id/tvContent"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:gravity="center"
             android:textColor="#92400E"
             android:textSize="13sp" />
-
-        <TextView
-            android:id="@+id/tvMessageTime"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:textColor="#B45309"
-            android:textSize="10sp" />
     </LinearLayout>
 
 </LinearLayout>

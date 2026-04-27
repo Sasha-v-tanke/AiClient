@@ -15,7 +15,7 @@
         android:paddingVertical="8dp">
 
         <TextView
-            android:id="@+id/tvSenderName"
+            android:id="@+id/tvSender"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textColor="#2563EB"
@@ -23,14 +23,14 @@
             android:textStyle="bold" />
 
         <TextView
-            android:id="@+id/tvMessageContent"
+            android:id="@+id/tvContent"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textColor="#1E293B"
             android:textSize="14sp" />
 
         <TextView
-            android:id="@+id/tvMessageTime"
+            android:id="@+id/tvTime"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="end"

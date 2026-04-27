@@ -15,7 +15,6 @@ import com.courier.messenger.models.Chat
 import com.courier.messenger.api.RetrofitClient
 import com.google.gson.Gson
 import com.courier.messenger.models.User
-import com.bumptech.glide.Glide
 import androidx.recyclerview.widget.RecyclerView
 import com.courier.messenger.databinding.ItemChatBinding
 import java.text.SimpleDateFormat
@@ -135,7 +134,7 @@ class ChatAdapter(
                 .joinToString(", ") { it.username }
                 .ifEmpty { "Чат" }
 
-            binding.tvChatTitle.text = title
+            binding.tvChatName.text = title
             binding.tvLastMessage.text = chat.lastMessage?.content ?: "Нет сообщений"
 
             // Время
