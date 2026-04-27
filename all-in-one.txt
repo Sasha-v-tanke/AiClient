@@ -1,0 +1,6200 @@
+# Мессенджер для службы курьеров
+
+## Архитектура проекта
+
+```
+courier-messenger/
+├── server/                     # Backend (Node.js + Express)
+│   ├── package.json
+│   ├── server.js
+│   ├── config/
+│   │   └── database.js
+│   ├── models/
+│   │   ├── User.js
+│   │   ├── Chat.js
+│   │   ├── Message.js
+│   │   ├── Order.js
+│   │   └── DeliveryStatus.js
+│   ├── routes/
+│   │   ├── auth.js
+│   │   ├── chats.js
+│   │   ├── messages.js
+│   │   ├── orders.js
+│   │   └── users.js
+│   ├── middleware/
+│   │   ├── auth.js
+│   │   └── validator.js
+│   ├── services/
+│   │   ├── messageService.js
+│   │   └── orderService.js
+│   └── socket/
+│       └── socketHandler.js
+├── web-client/                 # React Web App
+│   ├── package.json
+│   ├── public/
+│   │   └── index.html
+│   └── src/
+│       ├── App.js
+│       ├── index.js
+│       ├── api/
+│       │   └── api.js
+│       ├── components/
+│       │   ├── Auth/
+│       │   │   ├── Login.jsx
+│       │   │   └── Register.jsx
+│       │   ├── Chat/
+│       │   │   ├── ChatList.jsx
+│       │   │   ├── ChatWindow.jsx
+│       │   │   └── MessageBubble.jsx
+│       │   ├── Orders/
+│       │   │   ├── OrderList.jsx
+│       │   │   └── OrderCard.jsx
+│       │   └── Layout/
+│       │       ├── Header.jsx
+│       │       └── Sidebar.jsx
+│       ├── context/
+│       │   ├── AuthContext.js
+│       │   └── SocketContext.js
+│       └── styles/
+│           └── main.css
+└── android-client/             # Android App (Kotlin)
+    ├── build.gradle
+    └── app/
+        ├── build.gradle
+        └── src/main/
+            ├── AndroidManifest.xml
+            ├── java/com/courier/messenger/
+            │   ├── MainActivity.kt
+            │   ├── api/
+            │   │   ├── ApiService.kt
+            │   │   └── RetrofitClient.kt
+            │   ├── models/
+            │   │   ├── User.kt
+            │   │   ├── Chat.kt
+            │   │   ├── Message.kt
+            │   │   └── Order.kt
+            │   ├── ui/
+            │   │   ├── auth/
+            │   │   │   ├── LoginActivity.kt
+            │   │   │   └── LoginViewModel.kt
+            │   │   ├── chat/
+            │   │   │   ├── ChatListFragment.kt
+            │   │   │   ├── ChatFragment.kt
+            │   │   │   └── ChatViewModel.kt
+            │   │   └── orders/
+            │   │       ├── OrderListFragment.kt
+            │   │       └── OrderViewModel.kt
+            │   ├── repository/
+            │   │   ├── ChatRepository.kt
+            │   │   └── OrderRepository.kt
+            │   └── socket/
+            │       └── SocketManager.kt
+            └── res/
+                ├── layout/
+                │   ├── activity_main.xml
+                │   ├── activity_login.xml
+                │   ├── fragment_chat_list.xml
+                │   ├── fragment_chat.xml
+                │   ├── item_chat.xml
+                │   ├── item_message.xml
+                │   └── fragment_orders.xml
+                └── values/
+                    ├── strings.xml
+                    └── colors.xml
+```
+
+---
+
+## Модели данных (5 моделей)
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────────┐
+│    User      │────<│    Chat      │>────│    Message        │
+│──────────────│     │──────────────│     │──────────────────│
+│ _id          │     │ _id          │     │ _id              │
+│ username     │     │ participants │     │ chat             │
+│ email        │     │ type         │     │ sender           │
+│ password     │     │ orderRef     │     │ content          │
+│ role         │     │ createdAt    │     │ messageType      │
+│ phone        │     │ lastMessage  │     │ timestamp        │
+│ isOnline     │     └──────────────┘     │ readBy           │
+│ location     │            │              │ deliveryStatus   │
+└──────────────┘            │              └──────────────────┘
+       │              ┌─────┴──────┐               │
+       │              │   Order    │        ┌──────┴───────────┐
+       └─────────────>│────────────│        │ DeliveryStatus   │
+                      │ _id        │        │──────────────────│
+                      │ orderNumber│        │ _id              │
+                      │ customer   │        │ order            │
+                      │ courier    │        │ status           │
+                      │ dispatcher │        │ updatedBy        │
+                      │ address    │        │ location         │
+                      │ status     │        │ timestamp        │
+                      │ items      │        │ note             │
+                      │ createdAt  │        └──────────────────┘
+                      └────────────┘
+```
+
+**Перекрёстная валидация**: модель `DeliveryStatus` проверяет корректность модели `Order` (статус заказа не может перескакивать через этапы; при создании статуса проверяется текущее состояние заказа и допустимые переходы).
+
+---
+
+## 1. СЕРВЕРНАЯ ЧАСТЬ
+
+### package.json
+
+```json
+{
+  "name": "courier-messenger-server",
+  "version": "1.0.0",
+  "description": "Courier messenger backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "mongoose": "^7.6.3",
+    "socket.io": "^4.7.2",
+    "jsonwebtoken": "^9.0.2",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express-validator": "^7.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
+```
+
+### config/database.js
+
+```javascript
+const mongoose = require('mongoose');
+
+const connectDB = async () => {
+  try {
+    const conn = await mongoose.connect(
+      process.env.MONGODB_URI || 'mongodb://localhost:27017/courier_messenger',
+      {
+        useNewUrlParser: true,
+        useUnifiedTopology: true,
+      }
+    );
+    console.log(`MongoDB подключен: ${conn.connection.host}`);
+  } catch (error) {
+    console.error(`Ошибка подключения к MongoDB: ${error.message}`);
+    process.exit(1);
+  }
+};
+
+module.exports = connectDB;
+```
+
+### models/User.js
+
+```javascript
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+
+const userSchema = new mongoose.Schema({
+  username: {
+    type: String,
+    required: [true, 'Имя пользователя обязательно'],
+    unique: true,
+    trim: true,
+    minlength: [3, 'Минимум 3 символа'],
+    maxlength: [30, 'Максимум 30 символов'],
+  },
+  email: {
+    type: String,
+    required: [true, 'Email обязателен'],
+    unique: true,
+    lowercase: true,
+    match: [/^\S+@\S+\.\S+$/, 'Некорректный email'],
+  },
+  password: {
+    type: String,
+    required: [true, 'Пароль обязателен'],
+    minlength: [6, 'Минимум 6 символов'],
+    select: false,
+  },
+  role: {
+    type: String,
+    enum: {
+      values: ['courier', 'dispatcher', 'admin'],
+      message: 'Роль должна быть: courier, dispatcher или admin',
+    },
+    default: 'courier',
+  },
+  phone: {
+    type: String,
+    required: [true, 'Телефон обязателен'],
+    match: [/^\+?[\d\s\-()]{10,15}$/, 'Некорректный номер телефона'],
+  },
+  isOnline: {
+    type: Boolean,
+    default: false,
+  },
+  lastSeen: {
+    type: Date,
+    default: Date.now,
+  },
+  location: {
+    type: {
+      type: String,
+      enum: ['Point'],
+      default: 'Point',
+    },
+    coordinates: {
+      type: [Number],
+      default: [0, 0],
+    },
+  },
+  avatar: {
+    type: String,
+    default: '',
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
+// Индекс для геолокации
+userSchema.index({ location: '2dsphere' });
+
+// Хеширование пароля перед сохранением
+userSchema.pre('save', async function (next) {
+  if (!this.isModified('password')) return next();
+
+  const salt = await bcrypt.genSalt(12);
+  this.password = await bcrypt.hash(this.password, salt);
+  next();
+});
+
+// Метод проверки пароля
+userSchema.methods.comparePassword = async function (candidatePassword) {
+  return await bcrypt.compare(candidatePassword, this.password);
+};
+
+// Метод получения публичного профиля
+userSchema.methods.toPublicJSON = function () {
+  return {
+    _id: this._id,
+    username: this.username,
+    email: this.email,
+    role: this.role,
+    phone: this.phone,
+    isOnline: this.isOnline,
+    lastSeen: this.lastSeen,
+    location: this.location,
+    avatar: this.avatar,
+  };
+};
+
+module.exports = mongoose.model('User', userSchema);
+```
+
+### models/Chat.js
+
+```javascript
+const mongoose = require('mongoose');
+
+const chatSchema = new mongoose.Schema({
+  participants: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+  ],
+  type: {
+    type: String,
+    enum: {
+      values: ['direct', 'group', 'order'],
+      message: 'Тип чата: direct, group или order',
+    },
+    default: 'direct',
+  },
+  name: {
+    type: String,
+    trim: true,
+    maxlength: [100, 'Максимум 100 символов'],
+  },
+  orderRef: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Order',
+    default: null,
+  },
+  lastMessage: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Message',
+    default: null,
+  },
+  isActive: {
+    type: Boolean,
+    default: true,
+  },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
+// Валидация: минимум 2 участника
+chatSchema.pre('validate', function (next) {
+  if (this.participants.length < 2) {
+    this.invalidate('participants', 'Минимум 2 участника в чате');
+  }
+
+  // Direct чат — ровно 2 участника
+  if (this.type === 'direct' && this.participants.length !== 2) {
+    this.invalidate('participants', 'Личный чат должен содержать ровно 2 участника');
+  }
+
+  // Order чат должен ссылаться на заказ
+  if (this.type === 'order' && !this.orderRef) {
+    this.invalidate('orderRef', 'Чат заказа должен ссылаться на заказ');
+  }
+
+  next();
+});
+
+// Обновляем updatedAt при каждом сохранении
+chatSchema.pre('save', function (next) {
+  this.updatedAt = Date.now();
+  next();
+});
+
+// **Перекрёстная валидация с Order**: при создании чата типа "order"
+// проверяем, что заказ существует и его статус позволяет создать чат
+chatSchema.pre('save', async function (next) {
+  if (this.type === 'order' && this.orderRef && this.isNew) {
+    const Order = mongoose.model('Order');
+    const order = await Order.findById(this.orderRef);
+
+    if (!order) {
+      return next(new Error('Заказ не найден — невозможно создать чат'));
+    }
+
+    if (order.status === 'cancelled' || order.status === 'delivered') {
+      return next(
+        new Error(`Невозможно создать чат для заказа со статусом "${order.status}"`)
+      );
+    }
+  }
+  next();
+});
+
+module.exports = mongoose.model('Chat', chatSchema);
+```
+
+### models/Message.js
+
+```javascript
+const mongoose = require('mongoose');
+
+const messageSchema = new mongoose.Schema({
+  chat: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Chat',
+    required: [true, 'Ссылка на чат обязательна'],
+  },
+  sender: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: [true, 'Отправитель обязателен'],
+  },
+  content: {
+    type: String,
+    required: [true, 'Содержимое сообщения обязательно'],
+    trim: true,
+    maxlength: [5000, 'Максимум 5000 символов'],
+  },
+  messageType: {
+    type: String,
+    enum: {
+      values: ['text', 'image', 'location', 'status_update', 'system'],
+      message: 'Допустимые типы: text, image, location, status_update, system',
+    },
+    default: 'text',
+  },
+  metadata: {
+    // Для location — координаты
+    location: {
+      lat: Number,
+      lng: Number,
+    },
+    // Для image — URL
+    imageUrl: String,
+    // Для status_update — ссылка на DeliveryStatus
+    deliveryStatusRef: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'DeliveryStatus',
+    },
+  },
+  readBy: [
+    {
+      user: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+      readAt: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+  ],
+  isEdited: {
+    type: Boolean,
+    default: false,
+  },
+  isDeleted: {
+    type: Boolean,
+    default: false,
+  },
+  timestamp: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
+// Индекс для быстрой выборки сообщений чата
+messageSchema.index({ chat: 1, timestamp: -1 });
+
+// **Перекрёстная валидация с Chat**: отправитель должен быть участником чата
+messageSchema.pre('save', async function (next) {
+  if (this.isNew) {
+    const Chat = mongoose.model('Chat');
+    const chat = await Chat.findById(this.chat);
+
+    if (!chat) {
+      return next(new Error('Чат не найден'));
+    }
+
+    if (!chat.isActive) {
+      return next(new Error('Невозможно отправить сообщение в неактивный чат'));
+    }
+
+    const isParticipant = chat.participants.some(
+      (p) => p.toString() === this.sender.toString()
+    );
+
+    if (!isParticipant && this.messageType !== 'system') {
+      return next(new Error('Отправитель не является участником чата'));
+    }
+  }
+  next();
+});
+
+// После сохранения — обновляем lastMessage в чате
+messageSchema.post('save', async function () {
+  const Chat = mongoose.model('Chat');
+  await Chat.findByIdAndUpdate(this.chat, {
+    lastMessage: this._id,
+    updatedAt: Date.now(),
+  });
+});
+
+module.exports = mongoose.model('Message', messageSchema);
+```
+
+### models/Order.js
+
+```javascript
+const mongoose = require('mongoose');
+
+// Допустимые переходы статусов
+const VALID_STATUS_TRANSITIONS = {
+  created: ['assigned', 'cancelled'],
+  assigned: ['picked_up', 'cancelled'],
+  picked_up: ['in_transit', 'cancelled'],
+  in_transit: ['delivered', 'problem', 'cancelled'],
+  problem: ['in_transit', 'cancelled'],
+  delivered: [],
+  cancelled: [],
+};
+
+const orderSchema = new mongoose.Schema({
+  orderNumber: {
+    type: String,
+    required: [true, 'Номер заказа обязателен'],
+    unique: true,
+  },
+  customer: {
+    name: {
+      type: String,
+      required: [true, 'Имя клиента обязательно'],
+    },
+    phone: {
+      type: String,
+      required: [true, 'Телефон клиента обязателен'],
+    },
+    address: {
+      type: String,
+      required: [true, 'Адрес клиента обязателен'],
+    },
+  },
+  courier: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null,
+  },
+  dispatcher: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: [true, 'Диспетчер обязателен'],
+  },
+  pickupAddress: {
+    type: String,
+    required: [true, 'Адрес забора обязателен'],
+  },
+  deliveryAddress: {
+    type: String,
+    required: [true, 'Адрес доставки обязателен'],
+  },
+  status: {
+    type: String,
+    enum: {
+      values: [
+        'created',
+        'assigned',
+        'picked_up',
+        'in_transit',
+        'delivered',
+        'problem',
+        'cancelled',
+      ],
+      message: 'Недопустимый статус заказа',
+    },
+    default: 'created',
+  },
+  items: [
+    {
+      name: String,
+      quantity: { type: Number, default: 1 },
+      weight: Number,
+    },
+  ],
+  totalWeight: {
+    type: Number,
+    default: 0,
+  },
+  estimatedDelivery: {
+    type: Date,
+  },
+  notes: {
+    type: String,
+    maxlength: [1000, 'Максимум 1000 символов'],
+  },
+  priority: {
+    type: String,
+    enum: ['low', 'normal', 'high', 'urgent'],
+    default: 'normal',
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+  updatedAt: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
+// Генерация номера заказа
+orderSchema.pre('validate', function (next) {
+  if (this.isNew && !this.orderNumber) {
+    const timestamp = Date.now().toString(36).toUpperCase();
+    const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+    this.orderNumber = `ORD-${timestamp}-${random}`;
+  }
+  next();
+});
+
+// **КЛЮЧЕВОЙ МЕТОД**: проверка допустимости перехода статуса
+orderSchema.methods.canTransitionTo = function (newStatus) {
+  const allowed = VALID_STATUS_TRANSITIONS[this.status];
+  if (!allowed) return false;
+  return allowed.includes(newStatus);
+};
+
+// Валидация при назначении курьера
+orderSchema.pre('save', async function (next) {
+  if (this.isModified('courier') && this.courier) {
+    const User = mongoose.model('User');
+    const courier = await User.findById(this.courier);
+
+    if (!courier) {
+      return next(new Error('Курьер не найден'));
+    }
+    if (courier.role !== 'courier') {
+      return next(new Error('Назначенный пользователь не является курьером'));
+    }
+  }
+
+  // Проверка: диспетчер должен иметь роль dispatcher/admin
+  if (this.isNew) {
+    const User = mongoose.model('User');
+    const dispatcher = await User.findById(this.dispatcher);
+
+    if (!dispatcher) {
+      return next(new Error('Диспетчер не найден'));
+    }
+    if (!['dispatcher', 'admin'].includes(dispatcher.role)) {
+      return next(new Error('Назначенный диспетчер не имеет нужной роли'));
+    }
+  }
+
+  this.updatedAt = Date.now();
+  next();
+});
+
+// Статический метод: допустимые переходы
+orderSchema.statics.VALID_STATUS_TRANSITIONS = VALID_STATUS_TRANSITIONS;
+
+module.exports = mongoose.model('Order', orderSchema);
+```
+
+### models/DeliveryStatus.js — ⭐ ПРОВЕРЯЕТ КОРРЕКТНОСТЬ Order
+
+```javascript
+const mongoose = require('mongoose');
+
+const deliveryStatusSchema = new mongoose.Schema({
+  order: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Order',
+    required: [true, 'Ссылка на заказ обязательна'],
+  },
+  previousStatus: {
+    type: String,
+    required: true,
+  },
+  newStatus: {
+    type: String,
+    required: [true, 'Новый статус обязателен'],
+    enum: [
+      'created',
+      'assigned',
+      'picked_up',
+      'in_transit',
+      'delivered',
+      'problem',
+      'cancelled',
+    ],
+  },
+  updatedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: [true, 'Автор обновления обязателен'],
+  },
+  location: {
+    type: {
+      type: String,
+      enum: ['Point'],
+      default: 'Point',
+    },
+    coordinates: {
+      type: [Number],
+      default: [0, 0],
+    },
+  },
+  note: {
+    type: String,
+    maxlength: [500, 'Максимум 500 символов'],
+  },
+  timestamp: {
+    type: Date,
+    default: Date.now,
+  },
+  isValid: {
+    type: Boolean,
+    default: true,
+  },
+  validationErrors: [
+    {
+      type: String,
+    },
+  ],
+});
+
+// =====================================================
+// ⭐ ПЕРЕКРЁСТНАЯ ВАЛИДАЦИЯ: DeliveryStatus ПРОВЕРЯЕТ Order
+// =====================================================
+deliveryStatusSchema.pre('save', async function (next) {
+  if (!this.isNew) return next();
+
+  const Order = mongoose.model('Order');
+  const User = mongoose.model('User');
+  const errors = [];
+
+  // 1. Проверяем существование заказа
+  const order = await Order.findById(this.order);
+  if (!order) {
+    errors.push('Заказ не найден в базе данных');
+    this.isValid = false;
+    this.validationErrors = errors;
+    return next(new Error('Заказ не найден'));
+  }
+
+  // 2. Проверяем, что previousStatus совпадает с текущим статусом заказа
+  if (this.previousStatus !== order.status) {
+    errors.push(
+      `Несоответствие статусов: указан предыдущий "${this.previousStatus}", ` +
+        `а в заказе текущий "${order.status}"`
+    );
+  }
+
+  // 3. Проверяем допустимость перехода статуса через модель Order
+  if (!order.canTransitionTo(this.newStatus)) {
+    errors.push(
+      `Недопустимый переход статуса: "${order.status}" → "${this.newStatus}". ` +
+        `Допустимые: ${
+          Order.VALID_STATUS_TRANSITIONS[order.status]?.join(', ') || 'нет'
+        }`
+    );
+  }
+
+  // 4. Проверяем права пользователя на изменение статуса
+  const user = await User.findById(this.updatedBy);
+  if (!user) {
+    errors.push('Пользователь, обновляющий статус, не найден');
+  } else {
+    // Курьер может менять только свои заказы
+    if (user.role === 'courier') {
+      if (!order.courier || order.courier.toString() !== user._id.toString()) {
+        errors.push('Курьер может обновлять только назначенные ему заказы');
+      }
+      // Курьер не может назначать заказ (assigned)
+      if (this.newStatus === 'assigned') {
+        errors.push('Курьер не может самостоятельно назначать заказ');
+      }
+    }
+
+    // Только диспетчер/админ может отменять заказ
+    if (
+      this.newStatus === 'cancelled' &&
+      !['dispatcher', 'admin'].includes(user.role)
+    ) {
+      errors.push('Только диспетчер или админ может отменить заказ');
+    }
+  }
+
+  // 5. Проверяем: для picked_up и далее должен быть назначен курьер
+  if (
+    ['picked_up', 'in_transit', 'delivered'].includes(this.newStatus) &&
+    !order.courier
+  ) {
+    errors.push(
+      `Для статуса "${this.newStatus}" заказу должен быть назначен курьер`
+    );
+  }
+
+  // 6. Проверяем хронологию — нет ли более нового статуса
+  const latestStatus = await mongoose
+    .model('DeliveryStatus')
+    .findOne({ order: this.order })
+    .sort({ timestamp: -1 });
+
+  if (latestStatus && latestStatus.timestamp > this.timestamp) {
+    errors.push('Существует более новое обновление статуса');
+  }
+
+  // Сохраняем результат валидации
+  if (errors.length > 0) {
+    this.isValid = false;
+    this.validationErrors = errors;
+    return next(new Error(`Ошибки валидации: ${errors.join('; ')}`));
+  }
+
+  this.isValid = true;
+  this.validationErrors = [];
+
+  // Если валидация прошла — обновляем статус заказа
+  order.status = this.newStatus;
+  await order.save();
+
+  next();
+});
+
+// Индекс для быстрого поиска истории заказа
+deliveryStatusSchema.index({ order: 1, timestamp: -1 });
+
+module.exports = mongoose.model('DeliveryStatus', deliveryStatusSchema);
+```
+
+### middleware/auth.js
+
+```javascript
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'courier-messenger-secret-key-2024';
+
+// Генерация токена
+const generateToken = (userId) => {
+  return jwt.sign({ id: userId }, JWT_SECRET, { expiresIn: '7d' });
+};
+
+// Middleware проверки авторизации
+const protect = async (req, res, next) => {
+  let token;
+
+  if (
+    req.headers.authorization &&
+    req.headers.authorization.startsWith('Bearer')
+  ) {
+    token = req.headers.authorization.split(' ')[1];
+  }
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      message: 'Необходима авторизация',
+    });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await User.findById(decoded.id);
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Пользователь не найден',
+      });
+    }
+
+    req.user = user;
+    next();
+  } catch (error) {
+    return res.status(401).json({
+      success: false,
+      message: 'Токен недействителен',
+    });
+  }
+};
+
+// Middleware проверки роли
+const authorize = (...roles) => {
+  return (req, res, next) => {
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        message: `Роль "${req.user.role}" не имеет доступа к этому ресурсу`,
+      });
+    }
+    next();
+  };
+};
+
+module.exports = { generateToken, protect, authorize, JWT_SECRET };
+```
+
+### middleware/validator.js
+
+```javascript
+const { validationResult, body } = require('express-validator');
+
+const handleValidationErrors = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      success: false,
+      errors: errors.array().map((e) => ({
+        field: e.path,
+        message: e.msg,
+      })),
+    });
+  }
+  next();
+};
+
+const registerValidation = [
+  body('username')
+    .trim()
+    .isLength({ min: 3, max: 30 })
+    .withMessage('Имя пользователя: 3-30 символов'),
+  body('email').isEmail().normalizeEmail().withMessage('Некорректный email'),
+  body('password')
+    .isLength({ min: 6 })
+    .withMessage('Пароль минимум 6 символов'),
+  body('phone')
+    .matches(/^\+?[\d\s\-()]{10,15}$/)
+    .withMessage('Некорректный телефон'),
+  body('role')
+    .isIn(['courier', 'dispatcher', 'admin'])
+    .withMessage('Роль: courier, dispatcher или admin'),
+];
+
+const loginValidation = [
+  body('email').isEmail().normalizeEmail().withMessage('Некорректный email'),
+  body('password').notEmpty().withMessage('Пароль обязателен'),
+];
+
+const messageValidation = [
+  body('content')
+    .trim()
+    .isLength({ min: 1, max: 5000 })
+    .withMessage('Сообщение: 1-5000 символов'),
+  body('messageType')
+    .optional()
+    .isIn(['text', 'image', 'location', 'status_update', 'system'])
+    .withMessage('Недопустимый тип сообщения'),
+];
+
+module.exports = {
+  handleValidationErrors,
+  registerValidation,
+  loginValidation,
+  messageValidation,
+};
+```
+
+### routes/auth.js
+
+```javascript
+const express = require('express');
+const router = express.Router();
+const User = require('../models/User');
+const { generateToken, protect } = require('../middleware/auth');
+const {
+  registerValidation,
+  loginValidation,
+  handleValidationErrors,
+} = require('../middleware/validator');
+
+// POST /api/auth/register
+router.post(
+  '/register',
+  registerValidation,
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const { username, email, password, phone, role } = req.body;
+
+      // Проверка уникальности
+      const existingUser = await User.findOne({
+        $or: [{ email }, { username }],
+      });
+      if (existingUser) {
+        return res.status(400).json({
+          success: false,
+          message: 'Пользователь с таким email или именем уже существует',
+        });
+      }
+
+      const user = await User.create({
+        username,
+        email,
+        password,
+        phone,
+        role,
+      });
+
+      const token = generateToken(user._id);
+
+      res.status(201).json({
+        success: true,
+        data: {
+          user: user.toPublicJSON(),
+          token,
+        },
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
+);
+
+// POST /api/auth/login
+router.post(
+  '/login',
+  loginValidation,
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const { email, password } = req.body;
+
+      const user = await User.findOne({ email }).select('+password');
+      if (!user) {
+        return res.status(401).json({
+          success: false,
+          message: 'Неверные учётные данные',
+        });
+      }
+
+      const isMatch = await user.comparePassword(password);
+      if (!isMatch) {
+        return res.status(401).json({
+          success: false,
+          message: 'Неверные учётные данные',
+        });
+      }
+
+      // Обновляем статус
+      user.isOnline = true;
+      user.lastSeen = Date.now();
+      await user.save();
+
+      const token = generateToken(user._id);
+
+      res.json({
+        success: true,
+        data: {
+          user: user.toPublicJSON(),
+          token,
+        },
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: error.message,
+      });
+    }
+  }
+);
+
+// GET /api/auth/me
+router.get('/me', protect, async (req, res) => {
+  res.json({
+    success: true,
+    data: req.user.toPublicJSON(),
+  });
+});
+
+// POST /api/auth/logout
+router.post('/logout', protect, async (req, res) => {
+  try {
+    req.user.isOnline = false;
+    req.user.lastSeen = Date.now();
+    await req.user.save();
+
+    res.json({
+      success: true,
+      message: 'Вы вышли из системы',
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+module.exports = router;
+```
+
+### routes/chats.js
+
+```javascript
+const express = require('express');
+const router = express.Router();
+const Chat = require('../models/Chat');
+const Message = require('../models/Message');
+const { protect } = require('../middleware/auth');
+
+// GET /api/chats — список чатов текущего пользователя
+router.get('/', protect, async (req, res) => {
+  try {
+    const chats = await Chat.find({
+      participants: req.user._id,
+      isActive: true,
+    })
+      .populate('participants', 'username role isOnline avatar lastSeen')
+      .populate('lastMessage')
+      .populate('orderRef', 'orderNumber status')
+      .sort({ updatedAt: -1 });
+
+    res.json({
+      success: true,
+      data: chats,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /api/chats — создать чат
+router.post('/', protect, async (req, res) => {
+  try {
+    const { participants, type, name, orderRef } = req.body;
+
+    // Добавляем текущего пользователя в участники
+    const allParticipants = [
+      ...new Set([req.user._id.toString(), ...participants]),
+    ];
+
+    // Для direct чата проверяем, что такой чат ещё не существует
+    if (type === 'direct') {
+      const existingChat = await Chat.findOne({
+        type: 'direct',
+        participants: { $all: allParticipants, $size: 2 },
+        isActive: true,
+      });
+
+      if (existingChat) {
+        return res.json({
+          success: true,
+          data: await existingChat.populate(
+            'participants',
+            'username role isOnline avatar'
+          ),
+        });
+      }
+    }
+
+    const chat = await Chat.create({
+      participants: allParticipants,
+      type: type || 'direct',
+      name,
+      orderRef,
+      createdBy: req.user._id,
+    });
+
+    await chat.populate('participants', 'username role isOnline avatar');
+
+    res.status(201).json({
+      success: true,
+      data: chat,
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
+
+// GET /api/chats/:chatId — получить чат по ID
+router.get('/:chatId', protect, async (req, res) => {
+  try {
+    const chat = await Chat.findOne({
+      _id: req.params.chatId,
+      participants: req.user._id,
+    })
+      .populate('participants', 'username role isOnline avatar lastSeen')
+      .populate('orderRef');
+
+    if (!chat) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'Чат не найден' });
+    }
+
+    res.json({ success: true, data: chat });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+module.exports = router;
+```
+
+### routes/messages.js
+
+```javascript
+const express = require('express');
+const router = express.Router();
+const Message = require('../models/Message');
+const Chat = require('../models/Chat');
+const { protect } = require('../middleware/auth');
+const {
+  messageValidation,
+  handleValidationErrors,
+} = require('../middleware/validator');
+
+// GET /api/messages/:chatId — сообщения чата с пагинацией
+router.get('/:chatId', protect, async (req, res) => {
+  try {
+    const { page = 1, limit = 50 } = req.query;
+    const skip = (page - 1) * limit;
+
+    // Проверяем, что пользователь — участник чата
+    const chat = await Chat.findOne({
+      _id: req.params.chatId,
+      participants: req.user._id,
+    });
+
+    if (!chat) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'Чат не найден' });
+    }
+
+    const messages = await Message.find({
+      chat: req.params.chatId,
+      isDeleted: false,
+    })
+      .populate('sender', 'username role avatar')
+      .sort({ timestamp: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Message.countDocuments({
+      chat: req.params.chatId,
+      isDeleted: false,
+    });
+
+    res.json({
+      success: true,
+      data: messages.reverse(),
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /api/messages/:chatId — отправить сообщение
+router.post(
+  '/:chatId',
+  protect,
+  messageValidation,
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const { content, messageType, metadata } = req.body;
+
+      const message = await Message.create({
+        chat: req.params.chatId,
+        sender: req.user._id,
+        content,
+        messageType: messageType || 'text',
+        metadata,
+        readBy: [{ user: req.user._id }],
+      });
+
+      await message.populate('sender', 'username role avatar');
+
+      // Оповещаем через Socket.IO
+      const io = req.app.get('io');
+      if (io) {
+        io.to(`chat:${req.params.chatId}`).emit('new_message', message);
+      }
+
+      res.status(201).json({
+        success: true,
+        data: message,
+      });
+    } catch (error) {
+      res.status(400).json({ success: false, message: error.message });
+    }
+  }
+);
+
+// PUT /api/messages/:messageId/read — отметить как прочитанное
+router.put('/:messageId/read', protect, async (req, res) => {
+  try {
+    const message = await Message.findById(req.params.messageId);
+
+    if (!message) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'Сообщение не найдено' });
+    }
+
+    const alreadyRead = message.readBy.some(
+      (r) => r.user.toString() === req.user._id.toString()
+    );
+
+    if (!alreadyRead) {
+      message.readBy.push({ user: req.user._id });
+      await message.save();
+    }
+
+    res.json({ success: true, data: message });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+module.exports = router;
+```
+
+### routes/orders.js
+
+```javascript
+const express = require('express');
+const router = express.Router();
+const Order = require('../models/Order');
+const DeliveryStatus = require('../models/DeliveryStatus');
+const Chat = require('../models/Chat');
+const Message = require('../models/Message');
+const { protect, authorize } = require('../middleware/auth');
+
+// GET /api/orders — список заказов
+router.get('/', protect, async (req, res) => {
+  try {
+    let filter = {};
+
+    if (req.user.role === 'courier') {
+      filter.courier = req.user._id;
+    } else if (req.user.role === 'dispatcher') {
+      filter.dispatcher = req.user._id;
+    }
+    // admin видит все
+
+    const { status, page = 1, limit = 20 } = req.query;
+    if (status) filter.status = status;
+
+    const skip = (page - 1) * limit;
+
+    const orders = await Order.find(filter)
+      .populate('courier', 'username phone isOnline location')
+      .populate('dispatcher', 'username phone')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Order.countDocuments(filter);
+
+    res.json({
+      success: true,
+      data: orders,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /api/orders — создать заказ (диспетчер/админ)
+router.post(
+  '/',
+  protect,
+  authorize('dispatcher', 'admin'),
+  async (req, res) => {
+    try {
+      const order = await Order.create({
+        ...req.body,
+        dispatcher: req.user._id,
+      });
+
+      await order.populate('dispatcher', 'username phone');
+
+      res.status(201).json({
+        success: true,
+        data: order,
+      });
+    } catch (error) {
+      res.status(400).json({ success: false, message: error.message });
+    }
+  }
+);
+
+// PUT /api/orders/:orderId/assign — назначить курьера
+router.put(
+  '/:orderId/assign',
+  protect,
+  authorize('dispatcher', 'admin'),
+  async (req, res) => {
+    try {
+      const { courierId } = req.body;
+      const order = await Order.findById(req.params.orderId);
+
+      if (!order) {
+        return res
+          .status(404)
+          .json({ success: false, message: 'Заказ не найден' });
+      }
+
+      // Создаём запись DeliveryStatus (она проверит корректность перехода)
+      const deliveryStatus = await DeliveryStatus.create({
+        order: order._id,
+        previousStatus: order.status,
+        newStatus: 'assigned',
+        updatedBy: req.user._id,
+        note: `Назначен курьер`,
+      });
+
+      // Назначаем курьера
+      order.courier = courierId;
+      await order.save();
+
+      // Создаём чат для заказа
+      const chat = await Chat.create({
+        participants: [req.user._id, courierId],
+        type: 'order',
+        name: `Заказ ${order.orderNumber}`,
+        orderRef: order._id,
+        createdBy: req.user._id,
+      });
+
+      // Системное сообщение
+      await Message.create({
+        chat: chat._id,
+        sender: req.user._id,
+        content: `Заказ ${order.orderNumber} назначен. Адрес забора: ${order.pickupAddress}`,
+        messageType: 'system',
+      });
+
+      await order.populate('courier', 'username phone');
+
+      // Оповещаем через Socket.IO
+      const io = req.app.get('io');
+      if (io) {
+        io.to(`user:${courierId}`).emit('order_assigned', {
+          order,
+          chatId: chat._id,
+        });
+      }
+
+      res.json({
+        success: true,
+        data: { order, chat, deliveryStatus },
+      });
+    } catch (error) {
+      res.status(400).json({ success: false, message: error.message });
+    }
+  }
+);
+
+// PUT /api/orders/:orderId/status — обновить статус
+router.put('/:orderId/status', protect, async (req, res) => {
+  try {
+    const { newStatus, note, location } = req.body;
+    const order = await Order.findById(req.params.orderId);
+
+    if (!order) {
+      return res
+        .status(404)
+        .json({ success: false, message: 'Заказ не найден' });
+    }
+
+    // ⭐ DeliveryStatus проверит корректность перехода и обновит Order
+    const deliveryStatus = await DeliveryStatus.create({
+      order: order._id,
+      previousStatus: order.status,
+      newStatus,
+      updatedBy: req.user._id,
+      note,
+      location: location
+        ? { type: 'Point', coordinates: [location.lng, location.lat] }
+        : undefined,
+    });
+
+    // Отправляем системное сообщение в чат заказа
+    const chat = await Chat.findOne({
+      orderRef: order._id,
+      type: 'order',
+    });
+
+    if (chat) {
+      const statusMessages = {
+        picked_up: '📦 Заказ забран',
+        in_transit: '🚗 Заказ в пути',
+        delivered: '✅ Заказ доставлен',
+        problem: '⚠️ Проблема с заказом',
+        cancelled: '❌ Заказ отменён',
+      };
+
+      const message = await Message.create({
+        chat: chat._id,
+        sender: req.user._id,
+        content: `${statusMessages[newStatus] || 'Статус обновлён'}${
+          note ? ': ' + note : ''
+        }`,
+        messageType: 'status_update',
+        metadata: { deliveryStatusRef: deliveryStatus._id },
+      });
+
+      const io = req.app.get('io');
+      if (io) {
+        io.to(`chat:${chat._id}`).emit('status_update', {
+          order: await Order.findById(order._id),
+          deliveryStatus,
+          message,
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        order: await Order.findById(order._id).populate(
+          'courier dispatcher',
+          'username phone'
+        ),
+        deliveryStatus,
+      },
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
+
+// GET /api/orders/:orderId/history — история статусов
+router.get('/:orderId/history', protect, async (req, res) => {
+  try {
+    const history = await DeliveryStatus.find({ order: req.params.orderId })
+      .populate('updatedBy', 'username role')
+      .sort({ timestamp: 1 });
+
+    res.json({
+      success: true,
+      data: history,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+module.exports = router;
+```
+
+### routes/users.js
+
+```javascript
+const express = require('express');
+const router = express.Router();
+const User = require('../models/User');
+const { protect, authorize } = require('../middleware/auth');
+
+// GET /api/users — список пользователей
+router.get('/', protect, async (req, res) => {
+  try {
+    const { role, search } = req.query;
+    let filter = {};
+
+    if (role) filter.role = role;
+    if (search) {
+      filter.$or = [
+        { username: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    const users = await User.find(filter).select('-password');
+
+    res.json({
+      success: true,
+      data: users.map((u) => u.toPublicJSON()),
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// PUT /api/users/location — обновить геолокацию
+router.put('/location', protect, async (req, res) => {
+  try {
+    const { lat, lng } = req.body;
+
+    req.user.location = {
+      type: 'Point',
+      coordinates: [lng, lat],
+    };
+    await req.user.save();
+
+    res.json({
+      success: true,
+      data: req.user.toPublicJSON(),
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// GET /api/users/couriers/online — онлайн-курьеры
+router.get(
+  '/couriers/online',
+  protect,
+  authorize('dispatcher', 'admin'),
+  async (req, res) => {
+    try {
+      const couriers = await User.find({
+        role: 'courier',
+        isOnline: true,
+      });
+
+      res.json({
+        success: true,
+        data: couriers.map((c) => c.toPublicJSON()),
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+);
+
+module.exports = router;
+```
+
+### socket/socketHandler.js
+
+```javascript
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const { JWT_SECRET } = require('../middleware/auth');
+
+const setupSocket = (io) => {
+  // Middleware аутентификации для Socket.IO
+  io.use(async (socket, next) => {
+    try {
+      const token = socket.handshake.auth.token;
+      if (!token) {
+        return next(new Error('Требуется авторизация'));
+      }
+
+      const decoded = jwt.verify(token, JWT_SECRET);
+      const user = await User.findById(decoded.id);
+
+      if (!user) {
+        return next(new Error('Пользователь не найден'));
+      }
+
+      socket.user = user;
+      next();
+    } catch (error) {
+      next(new Error('Невалидный токен'));
+    }
+  });
+
+  io.on('connection', async (socket) => {
+    console.log(`🟢 Подключился: ${socket.user.username} (${socket.user.role})`);
+
+    // Обновляем статус онлайн
+    socket.user.isOnline = true;
+    socket.user.lastSeen = Date.now();
+    await socket.user.save();
+
+    // Подписка на личный канал
+    socket.join(`user:${socket.user._id}`);
+
+    // Оповещаем других о подключении
+    socket.broadcast.emit('user_online', {
+      userId: socket.user._id,
+      username: socket.user.username,
+    });
+
+    // Присоединение к чату
+    socket.on('join_chat', (chatId) => {
+      socket.join(`chat:${chatId}`);
+      console.log(`${socket.user.username} вошёл в чат ${chatId}`);
+    });
+
+    // Выход из чата
+    socket.on('leave_chat', (chatId) => {
+      socket.leave(`chat:${chatId}`);
+    });
+
+    // Индикатор набора текста
+    socket.on('typing', ({ chatId }) => {
+      socket.to(`chat:${chatId}`).emit('user_typing', {
+        userId: socket.user._id,
+        username: socket.user.username,
+        chatId,
+      });
+    });
+
+    // Прекращение набора
+    socket.on('stop_typing', ({ chatId }) => {
+      socket.to(`chat:${chatId}`).emit('user_stop_typing', {
+        userId: socket.user._id,
+        chatId,
+      });
+    });
+
+    // Обновление геолокации курьера
+    socket.on('update_location', async ({ lat, lng }) => {
+      socket.user.location = {
+        type: 'Point',
+        coordinates: [lng, lat],
+      };
+      await socket.user.save();
+
+      // Оповещаем диспетчеров
+      io.emit('courier_location_update', {
+        courierId: socket.user._id,
+        location: { lat, lng },
+        username: socket.user.username,
+      });
+    });
+
+    // Отключение
+    socket.on('disconnect', async () => {
+      console.log(`🔴 Отключился: ${socket.user.username}`);
+      socket.user.isOnline = false;
+      socket.user.lastSeen = Date.now();
+      await socket.user.save();
+
+      socket.broadcast.emit('user_offline', {
+        userId: socket.user._id,
+        username: socket.user.username,
+      });
+    });
+  });
+};
+
+module.exports = setupSocket;
+```
+
+### server.js
+
+```javascript
+require('dotenv').config();
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const connectDB = require('./config/database');
+const setupSocket = require('./socket/socketHandler');
+
+// Импорт маршрутов
+const authRoutes = require('./routes/auth');
+const chatRoutes = require('./routes/chats');
+const messageRoutes = require('./routes/messages');
+const orderRoutes = require('./routes/orders');
+const userRoutes = require('./routes/users');
+
+const app = express();
+const server = http.createServer(app);
+
+// Socket.IO с поддержкой CORS
+const io = new Server(server, {
+  cors: {
+    origin: ['http://localhost:3000', 'http://localhost:3001', '*'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true,
+  },
+});
+
+// Делаем io доступным в routes
+app.set('io', io);
+
+// Middleware
+app.use(cors({
+  origin: ['http://localhost:3000', 'http://localhost:3001'],
+  credentials: true,
+}));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Маршруты API
+app.use('/api/auth', authRoutes);
+app.use('/api/chats', chatRoutes);
+app.use('/api/messages', messageRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/users', userRoutes);
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+  });
+});
+
+// Обработка ошибок
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({
+    success: false,
+    message: 'Внутренняя ошибка сервера',
+    error: process.env.NODE_ENV === 'development' ? err.message : undefined,
+  });
+});
+
+// Подключение БД и запуск
+const PORT = process.env.PORT || 5000;
+
+connectDB().then(() => {
+  // Настройка Socket.IO
+  setupSocket(io);
+
+  server.listen(PORT, () => {
+    console.log(`
+    ╔══════════════════════════════════════════╗
+    ║  🚀 Courier Messenger Server             ║
+    ║  📡 HTTP: http://localhost:${PORT}          ║
+    ║  🔌 WebSocket: ws://localhost:${PORT}       ║
+    ║  📋 API: http://localhost:${PORT}/api       ║
+    ╚══════════════════════════════════════════╝
+    `);
+  });
+});
+
+module.exports = { app, server, io };
+```
+
+---
+
+## 2. ВЕБ-КЛИЕНТ (React)
+
+### web-client/package.json
+
+```json
+{
+  "name": "courier-messenger-web",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.20.0",
+    "react-scripts": "5.0.1",
+    "axios": "^1.6.2",
+    "socket.io-client": "^4.7.2"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build"
+  },
+  "proxy": "http://localhost:5000"
+}
+```
+
+### web-client/public/index.html
+
+```html
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Courier Messenger</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+```
+
+### web-client/src/api/api.js
+
+```javascript
+import axios from 'axios';
+
+const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
+const api = axios.create({
+  baseURL: API_BASE,
+  headers: { 'Content-Type': 'application/json' },
+});
+
+// Интерцептор — добавляем токен
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// Интерцептор — обработка ошибок
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      window.location.href = '/login';
+    }
+    return Promise.reject(error);
+  }
+);
+
+// Auth API
+export const authAPI = {
+  register: (data) => api.post('/auth/register', data),
+  login: (data) => api.post('/auth/login', data),
+  getMe: () => api.get('/auth/me'),
+  logout: () => api.post('/auth/logout'),
+};
+
+// Chat API
+export const chatAPI = {
+  getAll: () => api.get('/chats'),
+  getById: (chatId) => api.get(`/chats/${chatId}`),
+  create: (data) => api.post('/chats', data),
+};
+
+// Message API
+export const messageAPI = {
+  getByChat: (chatId, page = 1) =>
+    api.get(`/messages/${chatId}?page=${page}`),
+  send: (chatId, data) => api.post(`/messages/${chatId}`, data),
+  markRead: (messageId) => api.put(`/messages/${messageId}/read`),
+};
+
+// Order API
+export const orderAPI = {
+  getAll: (params) => api.get('/orders', { params }),
+  create: (data) => api.post('/orders', data),
+  assign: (orderId, courierId) =>
+    api.put(`/orders/${orderId}/assign`, { courierId }),
+  updateStatus: (orderId, data) =>
+    api.put(`/orders/${orderId}/status`, data),
+  getHistory: (orderId) => api.get(`/orders/${orderId}/history`),
+};
+
+// User API
+export const userAPI = {
+  getAll: (params) => api.get('/users', { params }),
+  updateLocation: (data) => api.put('/users/location', data),
+  getOnlineCouriers: () => api.get('/users/couriers/online'),
+};
+
+export default api;
+```
+
+### web-client/src/context/AuthContext.js
+
+```javascript
+import React, { createContext, useState, useContext, useEffect } from 'react';
+import { authAPI } from '../api/api';
+
+const AuthContext = createContext(null);
+
+export const AuthProvider = ({ children }) => {
+  const [user, setUser] = useState(null);
+  const [token, setToken] = useState(localStorage.getItem('token'));
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const initAuth = async () => {
+      if (token) {
+        try {
+          const response = await authAPI.getMe();
+          setUser(response.data.data);
+        } catch (error) {
+          localStorage.removeItem('token');
+          setToken(null);
+        }
+      }
+      setLoading(false);
+    };
+    initAuth();
+  }, [token]);
+
+  const login = async (email, password) => {
+    const response = await authAPI.login({ email, password });
+    const { user: userData, token: newToken } = response.data.data;
+    localStorage.setItem('token', newToken);
+    localStorage.setItem('user', JSON.stringify(userData));
+    setToken(newToken);
+    setUser(userData);
+    return userData;
+  };
+
+  const register = async (data) => {
+    const response = await authAPI.register(data);
+    const { user: userData, token: newToken } = response.data.data;
+    localStorage.setItem('token', newToken);
+    localStorage.setItem('user', JSON.stringify(userData));
+    setToken(newToken);
+    setUser(userData);
+    return userData;
+  };
+
+  const logout = async () => {
+    try {
+      await authAPI.logout();
+    } catch (e) {
+      // ignore
+    }
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setToken(null);
+    setUser(null);
+  };
+
+  return (
+    <AuthContext.Provider
+      value={{ user, token, loading, login, register, logout }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+export const useAuth = () => useContext(AuthContext);
+```
+
+### web-client/src/context/SocketContext.js
+
+```javascript
+import React, { createContext, useContext, useEffect, useState } from 'react';
+import { io } from 'socket.io-client';
+import { useAuth } from './AuthContext';
+
+const SocketContext = createContext(null);
+
+export const SocketProvider = ({ children }) => {
+  const [socket, setSocket] = useState(null);
+  const { token, user } = useAuth();
+
+  useEffect(() => {
+    if (token && user) {
+      const newSocket = io(
+        process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000',
+        {
+          auth: { token },
+          transports: ['websocket', 'polling'],
+        }
+      );
+
+      newSocket.on('connect', () => {
+        console.log('✅ Socket подключён');
+      });
+
+      newSocket.on('disconnect', () => {
+        console.log('❌ Socket отключён');
+      });
+
+      newSocket.on('connect_error', (err) => {
+        console.error('Socket error:', err.message);
+      });
+
+      setSocket(newSocket);
+
+      return () => {
+        newSocket.disconnect();
+      };
+    }
+  }, [token, user]);
+
+  return (
+    <SocketContext.Provider value={socket}>{children}</SocketContext.Provider>
+  );
+};
+
+export const useSocket = () => useContext(SocketContext);
+```
+
+### web-client/src/styles/main.css
+
+```css
+:root {
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --secondary: #64748b;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --bg: #f1f5f9;
+  --bg-dark: #0f172a;
+  --card-bg: #ffffff;
+  --text: #1e293b;
+  --text-light: #94a3b8;
+  --border: #e2e8f0;
+  --sidebar-width: 320px;
+  --header-height: 64px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', -apple-system, sans-serif;
+  background-color: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+/* ===== Layout ===== */
+.app-container {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ===== Sidebar ===== */
+.sidebar {
+  width: var(--sidebar-width);
+  background: var(--card-bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.sidebar-header {
+  padding: 16px 20px;
+  background: var(--primary);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--header-height);
+}
+
+.sidebar-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.sidebar-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-tab {
+  flex: 1;
+  padding: 12px;
+  text-align: center;
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--secondary);
+  transition: all 0.2s;
+}
+
+.sidebar-tab.active {
+  color: var(--primary);
+  border-bottom: 2px solid var(--primary);
+}
+
+.sidebar-content {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* ===== Chat List ===== */
+.chat-item {
+  display: flex;
+  align-items: center;
+  padding: 12px 20px;
+  cursor: pointer;
+  transition: background 0.2s;
+  border-bottom: 1px solid var(--border);
+}
+
+.chat-item:hover {
+  background: #f8fafc;
+}
+
+.chat-item.active {
+  background: #eff6ff;
+  border-right: 3px solid var(--primary);
+}
+
+.chat-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 18px;
+  margin-right: 12px;
+  flex-shrink: 0;
+}
+
+.chat-avatar.online::after {
+  content: '';
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  width: 12px;
+  height: 12px;
+  background: var(--success);
+  border-radius: 50%;
+  border: 2px solid white;
+}
+
+.chat-avatar-wrapper {
+  position: relative;
+}
+
+.chat-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-name {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.chat-last-message {
+  font-size: 13px;
+  color: var(--text-light);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-meta {
+  text-align: right;
+  margin-left: 8px;
+}
+
+.chat-time {
+  font-size: 11px;
+  color: var(--text-light);
+}
+
+.chat-badge {
+  background: var(--primary);
+  color: white;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  margin-top: 4px;
+  display: inline-block;
+}
+
+/* ===== Chat Window ===== */
+.chat-window {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.chat-header {
+  padding: 12px 24px;
+  background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  min-height: var(--header-height);
+}
+
+.chat-header-info h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.chat-header-info p {
+  font-size: 12px;
+  color: var(--success);
+}
+
+.messages-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ===== Messages ===== */
+.message {
+  display: flex;
+  margin-bottom: 4px;
+  max-width: 70%;
+}
+
+.message.sent {
+  align-self: flex-end;
+}
+
+.message.received {
+  align-self: flex-start;
+}
+
+.message-bubble {
+  padding: 10px 16px;
+  border-radius: 18px;
+  font-size: 14px;
+  line-height: 1.4;
+  position: relative;
+}
+
+.message.sent .message-bubble {
+  background: var(--primary);
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+.message.received .message-bubble {
+  background: white;
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+
+.message-sender {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--primary);
+  margin-bottom: 2px;
+}
+
+.message-time {
+  font-size: 10px;
+  opacity: 0.7;
+  margin-top: 4px;
+  text-align: right;
+}
+
+.message.system {
+  align-self: center;
+  max-width: 80%;
+}
+
+.message.system .message-bubble {
+  background: #fef3c7;
+  color: #92400e;
+  border-radius: 8px;
+  font-size: 13px;
+  text-align: center;
+  border: 1px solid #fde68a;
+}
+
+/* ===== Input Area ===== */
+.message-input-area {
+  padding: 16px 24px;
+  background: var(--card-bg);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.message-input {
+  flex: 1;
+  padding: 12px 20px;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.message-input:focus {
+  border-color: var(--primary);
+}
+
+.send-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: white;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  transition: background 0.2s;
+}
+
+.send-btn:hover {
+  background: var(--primary-dark);
+}
+
+/* ===== Auth ===== */
+.auth-container {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--primary) 0%, #7c3aed 100%);
+}
+
+.auth-card {
+  background: white;
+  border-radius: 16px;
+  padding: 40px;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+}
+
+.auth-card h1 {
+  font-size: 28px;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.auth-card p {
+  color: var(--text-light);
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.form-group input,
+.form-group select {
+  width: 100%;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+  border-color: var(--primary);
+}
+
+.btn {
+  width: 100%;
+  padding: 14px;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: white;
+}
+
+.btn-primary:hover {
+  background: var(--primary-dark);
+}
+
+.auth-link {
+  text-align: center;
+  margin-top: 20px;
+  font-size: 14px;
+}
+
+.auth-link a {
+  color: var(--primary);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+/* ===== Order ===== */
+.order-list {
+  padding: 12px;
+}
+
+.order-card {
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.order-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.order-number {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--primary);
+  margin-bottom: 4px;
+}
+
+.order-address {
+  font-size: 13px;
+  color: var(--secondary);
+  margin-bottom: 8px;
+}
+
+.order-status {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.status-created { background: #e2e8f0; color: #475569; }
+.status-assigned { background: #dbeafe; color: #2563eb; }
+.status-picked_up { background: #fef3c7; color: #b45309; }
+.status-in_transit { background: #fce7f3; color: #be185d; }
+.status-delivered { background: #dcfce7; color: #16a34a; }
+.status-problem { background: #fef2f2; color: #dc2626; }
+.status-cancelled { background: #f1f5f9; color: #94a3b8; }
+
+/* ===== Empty State ===== */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-light);
+}
+
+.empty-state i {
+  font-size: 64px;
+  margin-bottom: 16px;
+  opacity: 0.3;
+}
+
+.empty-state h3 {
+  font-size: 18px;
+  margin-bottom: 8px;
+}
+
+/* ===== Typing Indicator ===== */
+.typing-indicator {
+  font-size: 13px;
+  color: var(--text-light);
+  font-style: italic;
+  padding: 4px 0;
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 100%;
+    position: absolute;
+    z-index: 10;
+  }
+
+  .chat-window {
+    width: 100%;
+  }
+}
+
+/* ===== Error Message ===== */
+.error-message {
+  background: #fef2f2;
+  color: var(--danger);
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 14px;
+  border: 1px solid #fecaca;
+}
+```
+
+### web-client/src/components/Auth/Login.jsx
+
+```jsx
+import React, { useState } from 'react';
+import { useAuth } from '../../context/AuthContext';
+import { Link, useNavigate } from 'react-router-dom';
+
+const Login = () => {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const { login } = useAuth();
+  const navigate = useNavigate();
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+
+    try {
+      await login(email, password);
+      navigate('/');
+    } catch (err) {
+      setError(
+        err.response?.data?.message || 'Ошибка входа. Проверьте данные.'
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="auth-container">
+      <div className="auth-card">
+        <h1>🚚 Courier Messenger</h1>
+        <p>Войдите в систему</p>
+
+        {error && <div className="error-message">{error}</div>}
+
+        <form onSubmit={handleSubmit}>
+          <div className="form-group">
+            <label>Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="courier@example.com"
+              required
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Пароль</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••"
+              required
+            />
+          </div>
+
+          <button type="submit" className="btn btn-primary" disabled={loading}>
+            {loading ? 'Входим...' : 'Войти'}
+          </button>
+        </form>
+
+        <div className="auth-link">
+          Нет аккаунта? <Link to="/register">Зарегистрироваться</Link>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Login;
+```
+
+### web-client/src/components/Auth/Register.jsx
+
+```jsx
+import React, { useState } from 'react';
+import { useAuth } from '../../context/AuthContext';
+import { Link, useNavigate } from 'react-router-dom';
+
+const Register = () => {
+  const [form, setForm] = useState({
+    username: '',
+    email: '',
+    password: '',
+    phone: '',
+    role: 'courier',
+  });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const { register } = useAuth();
+  const navigate = useNavigate();
+
+  const handleChange = (e) => {
+    setForm({ ...form, [e.target.name]: e.target.value });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+
+    try {
+      await register(form);
+      navigate('/');
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          err.response?.data?.errors?.map((e) => e.message).join(', ') ||
+          'Ошибка регистрации'
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="auth-container">
+      <div className="auth-card">
+        <h1>🚚 Регистрация</h1>
+        <p>Создайте аккаунт в системе</p>
+
+        {error && <div className="error-message">{error}</div>}
+
+        <form onSubmit={handleSubmit}>
+          <div className="form-group">
+            <label>Имя пользователя</label>
+            <input
+              type="text"
+              name="username"
+              value={form.username}
+              onChange={handleChange}
+              placeholder="Иван"
+              required
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Email</label>
+            <input
+              type="email"
+              name="email"
+              value={form.email}
+              onChange={handleChange}
+              placeholder="ivan@example.com"
+              required
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Пароль</label>
+            <input
+              type="password"
+              name="password"
+              value={form.password}
+              onChange={handleChange}
+              placeholder="Минимум 6 символов"
+              required
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Телефон</label>
+            <input
+              type="tel"
+              name="phone"
+              value={form.phone}
+              onChange={handleChange}
+              placeholder="+7 (999) 123-45-67"
+              required
+            />
+          </div>
+
+          <div className="form-group">
+            <label>Роль</label>
+            <select name="role" value={form.role} onChange={handleChange}>
+              <option value="courier">Курьер</option>
+              <option value="dispatcher">Диспетчер</option>
+            </select>
+          </div>
+
+          <button type="submit" className="btn btn-primary" disabled={loading}>
+            {loading ? 'Регистрация...' : 'Зарегистрироваться'}
+          </button>
+        </form>
+
+        <div className="auth-link">
+          Есть аккаунт? <Link to="/login">Войти</Link>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Register;
+```
+
+### web-client/src/components/Chat/ChatList.jsx
+
+```jsx
+import React, { useState, useEffect } from 'react';
+import { chatAPI } from '../../api/api';
+import { useAuth } from '../../context/AuthContext';
+import { useSocket } from '../../context/SocketContext';
+
+const ChatList = ({ activeChat, onSelectChat }) => {
+  const [chats, setChats] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const { user } = useAuth();
+  const socket = useSocket();
+
+  const fetchChats = async () => {
+    try {
+      const response = await chatAPI.getAll();
+      setChats(response.data.data);
+    } catch (error) {
+      console.error('Ошибка загрузки чатов:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchChats();
+  }, []);
+
+  useEffect(() => {
+    if (socket) {
+      socket.on('new_message', () => {
+        fetchChats(); // Обновляем список при новом сообщении
+      });
+
+      return () => {
+        socket.off('new_message');
+      };
+    }
+  }, [socket]);
+
+  const getChatName = (chat) => {
+    if (chat.name) return chat.name;
+    if (chat.type === 'direct') {
+      const otherUser = chat.participants.find(
+        (p) => p._id !== user._id
+      );
+      return otherUser?.username || 'Неизвестный';
+    }
+    return 'Групповой чат';
+  };
+
+  const getChatAvatar = (chat) => {
+    const name = getChatName(chat);
+    return name.charAt(0).toUpperCase();
+  };
+
+  const formatTime = (dateStr) => {
+    if (!dateStr) return '';
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diff = now - date;
+
+    if (diff < 86400000) {
+      return date.toLocaleTimeString('ru-RU', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    }
+    return date.toLocaleDateString('ru-RU', {
+      day: 'numeric',
+      month: 'short',
+    });
+  };
+
+  if (loading) {
+    return (
+      <div className="empty-state">
+        <i className="fas fa-spinner fa-spin"></i>
+        <p>Загрузка...</p>
+      </div>
+    );
+  }
+
+  if (chats.length === 0) {
+    return (
+      <div className="empty-state">
+        <i className="fas fa-comments"></i>
+        <h3>Нет чатов</h3>
+        <p>Начните новый диалог</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {chats.map((chat) => (
+        <div
+          key={chat._id}
+          className={`chat-item ${activeChat === chat._id ? 'active' : ''}`}
+          onClick={() => onSelectChat(chat)}
+        >
+          <div className="chat-avatar">
+            {chat.type === 'order' ? '📦' : getChatAvatar(chat)}
+          </div>
+          <div className="chat-info">
+            <div className="chat-name">{getChatName(chat)}</div>
+            <div className="chat-last-message">
+              {chat.lastMessage?.content || 'Нет сообщений'}
+            </div>
+          </div>
+          <div className="chat-meta">
+            <div className="chat-time">
+              {formatTime(chat.updatedAt)}
+            </div>
+            {chat.orderRef && (
+              <span className={`order-status status-${chat.orderRef.status}`}>
+                {chat.orderRef.status}
+              </span>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+export default ChatList;
+```
+
+### web-client/src/components/Chat/MessageBubble.jsx
+
+```jsx
+import React from 'react';
+import { useAuth } from '../../context/AuthContext';
+
+const MessageBubble = ({ message }) => {
+  const { user } = useAuth();
+  const isSent = message.sender?._id === user?._id;
+  const isSystem = message.messageType === 'system' || message.messageType === 'status_update';
+
+  const formatTime = (dateStr) => {
+    return new Date(dateStr).toLocaleTimeString('ru-RU', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
+  if (isSystem) {
+    return (
+      <div className="message system">
+        <div className="message-bubble">
+          {message.content}
+          <div className="message-time">{formatTime(message.timestamp)}</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`message ${isSent ? 'sent' : 'received'}`}>
+      <div className="message-bubble">
+        {!isSent && (
+          <div className="message-sender">
+            {message.sender?.username} ({message.sender?.role})
+          </div>
+        )}
+        {message.messageType === 'location' && message.metadata?.location ? (
+          <div>
+            📍 Координаты: {message.metadata.location.lat.toFixed(4)},{' '}
+            {message.metadata.location.lng.toFixed(4)}
+            <br />
+            {message.content}
+          </div>
+        ) : (
+          message.content
+        )}
+        <div className="message-time">
+          {formatTime(message.timestamp)}
+          {isSent && (
+            <span style={{ marginLeft: 4 }}>
+              {message.readBy?.length > 1 ? '✓✓' : '✓'}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default MessageBubble;
+```
+
+### web-client/src/components/Chat/ChatWindow.jsx
+
+```jsx
+import React, { useState, useEffect, useRef } from 'react';
+import { messageAPI } from '../../api/api';
+import { useSocket } from '../../context/SocketContext';
+import MessageBubble from './MessageBubble';
+
+const ChatWindow = ({ chat }) => {
+  const [messages, setMessages] = useState([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [typing, setTyping] = useState(null);
+  const messagesEndRef = useRef(null);
+  const socket = useSocket();
+
+  const fetchMessages = async () => {
+    try {
+      const response = await messageAPI.getByChat(chat._id);
+      setMessages(response.data.data);
+    } catch (error) {
+      console.error('Ошибка загрузки сообщений:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchMessages();
+
+    if (socket) {
+      socket.emit('join_chat', chat._id);
+
+      socket.on('new_message', (message) => {
+        if (message.chat === chat._id) {
+          setMessages((prev) => [...prev, message]);
+        }
+      });
+
+      socket.on('user_typing', ({ username, chatId }) => {
+        if (chatId === chat._id) {
+          setTyping(username);
+          setTimeout(() => setTyping(null), 3000);
+        }
+      });
+
+      socket.on('user_stop_typing', ({ chatId }) => {
+        if (chatId === chat._id) {
+          setTyping(null);
+        }
+      });
+
+      return () => {
+        socket.emit('leave_chat', chat._id);
+        socket.off('new_message');
+        socket.off('user_typing');
+        socket.off('user_stop_typing');
+      };
+    }
+  }, [chat._id, socket]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  const handleSend = async (e) => {
+    e.preventDefault();
+    if (!newMessage.trim()) return;
+
+    try {
+      const response = await messageAPI.send(chat._id, {
+        content: newMessage.trim(),
+      });
+      setMessages((prev) => [...prev, response.data.data]);
+      setNewMessage('');
+
+      if (socket) {
+        socket.emit('stop_typing', { chatId: chat._id });
+      }
+    } catch (error) {
+      console.error('Ошибка отправки:', error);
+    }
+  };
+
+  const handleTyping = () => {
+    if (socket) {
+      socket.emit('typing', { chatId: chat._id });
+    }
+  };
+
+  const getChatTitle = () => {
+    return chat.name || chat.participants?.map((p) => p.username).join(', ');
+  };
+
+  if (!chat) {
+    return (
+      <div className="chat-window">
+        <div className="empty-state">
+          <i className="fas fa-comment-dots"></i>
+          <h3>Выберите чат</h3>
+          <p>Выберите диалог из списка слева</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="chat-window">
+      {/* Header */}
+      <div className="chat-header">
+        <div className="chat-avatar" style={{ marginRight: 12 }}>
+          {chat.type === 'order' ? '📦' : getChatTitle().charAt(0)}
+        </div>
+        <div className="chat-header-info">
+          <h3>{getChatTitle()}</h3>
+          <p>
+            {chat.type === 'order'
+              ? `Заказ • ${chat.orderRef?.status || ''}`
+              : `${chat.participants?.length || 0} участников`}
+          </p>
+        </div>
+      </div>
+
+      {/* Messages */}
+      <div className="messages-container">
+        {loading ? (
+          <div className="empty-state">
+            <i className="fas fa-spinner fa-spin"></i>
+          </div>
+        ) : messages.length === 0 ? (
+          <div className="empty-state">
+            <i className="fas fa-paper-plane"></i>
+            <h3>Нет сообщений</h3>
+            <p>Напишите первое сообщение</p>
+          </div>
+        ) : (
+          messages.map((msg) => (
+            <MessageBubble key={msg._id} message={msg} />
+          ))
+        )}
+        {typing && (
+          <div className="typing-indicator">
+            {typing} печатает...
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input */}
+      <form className="message-input-area" onSubmit={handleSend}>
+        <input
+          type="text"
+          className="message-input"
+          value={newMessage}
+          onChange={(e) => setNewMessage(e.target.value)}
+          onKeyPress={handleTyping}
+          placeholder="Введите сообщение..."
+        />
+        <button type="submit" className="send-btn">
+          <i className="fas fa-paper-plane"></i>
+        </button>
+      </form>
+    </div>
+  );
+};
+
+export default ChatWindow;
+```
+
+### web-client/src/components/Orders/OrderList.jsx
+
+```jsx
+import React, { useState, useEffect } from 'react';
+import { orderAPI, userAPI } from '../../api/api';
+import { useAuth } from '../../context/AuthContext';
+
+const OrderList = () => {
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+  const [couriers, setCouriers] = useState([]);
+  const { user } = useAuth();
+
+  const [newOrder, setNewOrder] = useState({
+    customer: { name: '', phone: '', address: '' },
+    pickupAddress: '',
+    deliveryAddress: '',
+    items: [{ name: '', quantity: 1 }],
+    priority: 'normal',
+  });
+
+  const fetchOrders = async () => {
+    try {
+      const response = await orderAPI.getAll();
+      setOrders(response.data.data);
+    } catch (error) {
+      console.error('Ошибка загрузки заказов:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchOrders();
+    if (['dispatcher', 'admin'].includes(user?.role)) {
+      userAPI.getAll({ role: 'courier' }).then((res) => {
+        setCouriers(res.data.data);
+      });
+    }
+  }, [user]);
+
+  const handleCreateOrder = async (e) => {
+    e.preventDefault();
+    try {
+      await orderAPI.create(newOrder);
+      setShowCreate(false);
+      fetchOrders();
+    } catch (error) {
+      alert(error.response?.data?.message || 'Ошибка создания заказа');
+    }
+  };
+
+  const handleAssign = async (orderId, courierId) => {
+    try {
+      await orderAPI.assign(orderId, courierId);
+      fetchOrders();
+    } catch (error) {
+      alert(error.response?.data?.message || 'Ошибка назначения');
+    }
+  };
+
+  const handleStatusUpdate = async (orderId, currentStatus) => {
+    const transitions = {
+      assigned: 'picked_up',
+      picked_up: 'in_transit',
+      in_transit: 'delivered',
+    };
+    const newStatus = transitions[currentStatus];
+    if (!newStatus) return;
+
+    try {
+      await orderAPI.updateStatus(orderId, { newStatus });
+      fetchOrders();
+    } catch (error) {
+      alert(error.response?.data?.message || 'Ошибка обновления статуса');
+    }
+  };
+
+  const statusLabels = {
+    created: '🆕 Создан',
+    assigned: '👤 Назначен',
+    picked_up: '📦 Забран',
+    in_transit: '🚗 В пути',
+    delivered: '✅ Доставлен',
+    problem: '⚠️ Проблема',
+    cancelled: '❌ Отменён',
+  };
+
+  if (loading) {
+    return <div className="empty-state"><p>Загрузка заказов...</p></div>;
+  }
+
+  return (
+    <div className="order-list">
+      {['dispatcher', 'admin'].includes(user?.role) && (
+        <button
+          className="btn btn-primary"
+          style={{ marginBottom: 12, padding: '10px 16px', fontSize: 14, borderRadius: 8 }}
+          onClick={() => setShowCreate(!showCreate)}
+        >
+          {showCreate ? 'Отмена' : '+ Новый заказ'}
+        </button>
+      )}
+
+      {showCreate && (
+        <form onSubmit={handleCreateOrder} className="order-card">
+          <h4 style={{ marginBottom: 12 }}>Новый заказ</h4>
+          <div className="form-group">
+            <label>Имя клиента</label>
+            <input
+              value={newOrder.customer.name}
+              onChange={(e) =>
+                setNewOrder({
+                  ...newOrder,
+                  customer: { ...newOrder.customer, name: e.target.value },
+                })
+              }
+              required
+            />
+          </div>
+          <div className="form-group">
+            <label>Телефон клиента</label>
+            <input
+              value={newOrder.customer.phone}
+              onChange={(e) =>
+                setNewOrder({
+                  ...newOrder,
+                  customer: { ...newOrder.customer, phone: e.target.value },
+                })
+              }
+              required
+            />
+          </div>
+          <div className="form-group">
+            <label>Адрес клиента</label>
+            <input
+              value={newOrder.customer.address}
+              onChange={(e) =>
+                setNewOrder({
+                  ...newOrder,
+                  customer: { ...newOrder.customer, address: e.target.value },
+                })
+              }
+              required
+            />
+          </div>
+          <div className="form-group">
+            <label>Адрес забора</label>
+            <input
+              value={newOrder.pickupAddress}
+              onChange={(e) =>
+                setNewOrder({ ...newOrder, pickupAddress: e.target.value })
+              }
+              required
+            />
+          </div>
+          <div className="form-group">
+            <label>Адрес доставки</label>
+            <input
+              value={newOrder.deliveryAddress}
+              onChange={(e) =>
+                setNewOrder({ ...newOrder, deliveryAddress: e.target.value })
+              }
+              required
+            />
+          </div>
+          <button type="submit" className="btn btn-primary">
+            Создать заказ
+          </button>
+        </form>
+      )}
+
+      {orders.length === 0 ? (
+        <div className="empty-state">
+          <i className="fas fa-box-open"></i>
+          <h3>Нет заказов</h3>
+        </div>
+      ) : (
+        orders.map((order) => (
+          <div key={order._id} className="order-card">
+            <div className="order-number">{order.orderNumber}</div>
+            <div className="order-address">
+              📍 {order.pickupAddress} → {order.deliveryAddress}
+            </div>
+            <div className="order-address">
+              👤 {order.customer?.name} • {order.customer?.phone}
+            </div>
+            <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span className={`order-status status-${order.status}`}>
+                {statusLabels[order.status]}
+              </span>
+              {order.courier && (
+                <span style={{ fontSize: 13 }}>
+                  🚴 {order.courier.username}
+                </span>
+              )}
+            </div>
+
+            {/* Назначить курьера */}
+            {order.status === 'created' &&
+              ['dispatcher', 'admin'].includes(user?.role) && (
+                <div style={{ marginTop: 8 }}>
+                  <select
+                    onChange={(e) => {
+                      if (e.target.value) handleAssign(order._id, e.target.value);
+                    }}
+                    style={{ padding: 8, borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }}
+                  >
+                    <option value="">Назначить курьера...</option>
+                    {couriers.map((c) => (
+                      <option key={c._id} value={c._id}>
+                        {c.username} {c.isOnline ? '🟢' : '🔴'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+            {/* Обновить статус (курьер) */}
+            {user?.role === 'courier' &&
+              ['assigned', 'picked_up', 'in_transit'].includes(order.status) && (
+                <button
+                  onClick={() => handleStatusUpdate(order._id, order.status)}
+                  style={{
+                    marginTop: 8,
+                    padding: '8px 16px',
+                    background: '#22c55e',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    fontSize: 13,
+                  }}
+                >
+                  {order.status === 'assigned' && '📦 Забрал'}
+                  {order.status === 'picked_up' && '🚗 В пути'}
+                  {order.status === 'in_transit' && '✅ Доставил'}
+                </button>
+              )}
+          </div>
+        ))
+      )}
+    </div>
+  );
+};
+
+export default OrderList;
+```
+
+### web-client/src/components/Layout/Sidebar.jsx
+
+```jsx
+import React, { useState } from 'react';
+import { useAuth } from '../../context/AuthContext';
+import ChatList from '../Chat/ChatList';
+import OrderList from '../Orders/OrderList';
+
+const Sidebar = ({ activeChat, onSelectChat }) => {
+  const [activeTab, setActiveTab] = useState('chats');
+  const { user, logout } = useAuth();
+
+  return (
+    <div className="sidebar">
+      <div className="sidebar-header">
+        <h2>🚚 Courier MSG</h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 12 }}>
+            {user?.username} ({user?.role})
+          </span>
+          <button
+            onClick={logout}
+            style={{
+              background: 'rgba(255,255,255,0.2)',
+              border: 'none',
+              color: 'white',
+              padding: '4px 8px',
+              borderRadius: 4,
+              cursor: 'pointer',
+              fontSize: 12,
+            }}
+          >
+            <i className="fas fa-sign-out-alt"></i>
+          </button>
+        </div>
+      </div>
+
+      <div className="sidebar-tabs">
+        <button
+          className={`sidebar-tab ${activeTab === 'chats' ? 'active' : ''}`}
+          onClick={() => setActiveTab('chats')}
+        >
+          <i className="fas fa-comments"></i> Чаты
+        </button>
+        <button
+          className={`sidebar-tab ${activeTab === 'orders' ? 'active' : ''}`}
+          onClick={() => setActiveTab('orders')}
+        >
+          <i className="fas fa-box"></i> Заказы
+        </button>
+      </div>
+
+      <div className="sidebar-content">
+        {activeTab === 'chats' ? (
+          <ChatList activeChat={activeChat} onSelectChat={onSelectChat} />
+        ) : (
+          <OrderList />
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default Sidebar;
+```
+
+### web-client/src/App.js
+
+```jsx
+import React, { useState } from 'react';
+import {
+  BrowserRouter as Router,
+  Routes,
+  Route,
+  Navigate,
+} from 'react-router-dom';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { SocketProvider } from './context/SocketContext';
+import Login from './components/Auth/Login';
+import Register from './components/Auth/Register';
+import Sidebar from './components/Layout/Sidebar';
+import ChatWindow from './components/Chat/ChatWindow';
+import './styles/main.css';
+
+const MainApp = () => {
+  const [activeChat, setActiveChat] = useState(null);
+
+  return (
+    <SocketProvider>
+      <div className="app-container">
+        <Sidebar
+          activeChat={activeChat?._id}
+          onSelectChat={setActiveChat}
+        />
+        {activeChat ? (
+          <ChatWindow chat={activeChat} />
+        ) : (
+          <div className="chat-window">
+            <div className="empty-state">
+              <i className="fas fa-comment-dots"></i>
+              <h3>Courier Messenger</h3>
+              <p>Выберите чат из списка или создайте заказ</p>
+            </div>
+          </div>
+        )}
+      </div>
+    </SocketProvider>
+  );
+};
+
+const ProtectedRoute = ({ children }) => {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="auth-container">
+        <div style={{ color: 'white', fontSize: 18 }}>Загрузка...</div>
+      </div>
+    );
+  }
+
+  return user ? children : <Navigate to="/login" />;
+};
+
+const App = () => {
+  return (
+    <AuthProvider>
+      <Router>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route
+            path="/*"
+            element={
+              <ProtectedRoute>
+                <MainApp />
+              </ProtectedRoute>
+            }
+          />
+        </Routes>
+      </Router>
+    </AuthProvider>
+  );
+};
+
+export default App;
+```
+
+### web-client/src/index.js
+
+```javascript
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+```
+
+---
+
+## 3. ANDROID-КЛИЕНТ (Kotlin)
+
+### android-client/build.gradle (Project-level)
+
+```groovy
+buildscript {
+    ext.kotlin_version = '1.9.10'
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.1.2'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+```
+
+### android-client/app/build.gradle
+
+```groovy
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.courier.messenger'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.courier.messenger"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+        buildConfigField "String", "BASE_URL", '"http://10.0.2.2:5000/"'
+    }
+
+    buildFeatures {
+        viewBinding true
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.10.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.6.2'
+    implementation 'androidx.lifecycle:lifecycle-livedata-ktx:2.6.2'
+    implementation 'androidx.recyclerview:recyclerview:1.3.2'
+    implementation 'androidx.fragment:fragment-ktx:1.6.2'
+
+    // Networking
+    implementation 'com.squareup.retrofit2:retrofit:2.9.0'
+    implementation 'com.squareup.retrofit2:converter-gson:2.9.0'
+    implementation 'com.squareup.okhttp3:logging-interceptor:4.12.0'
+
+    // Socket.IO
+    implementation('io.socket:socket.io-client:2.1.0') {
+        exclude group: 'org.json', module: 'json'
+    }
+
+    // Coroutines
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+
+    // Gson
+    implementation 'com.google.code.gson:gson:2.10.1'
+}
+```
+
+### android-client/app/src/main/AndroidManifest.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@style/Theme.CourierMessenger">
+
+        <activity
+            android:name=".ui.auth.LoginActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".MainActivity" />
+    </application>
+
+</manifest>
+```
+
+### android-client/app/src/main/res/xml/network_security_config.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">localhost</domain>
+    </domain-config>
+</network-security-config>
+```
+
+### models/User.kt
+
+```kotlin
+package com.courier.messenger.models
+
+data class User(
+    val _id: String,
+    val username: String,
+    val email: String,
+    val role: String,
+    val phone: String,
+    val isOnline: Boolean = false,
+    val lastSeen: String? = null,
+    val avatar: String? = null
+)
+
+data class AuthResponse(
+    val success: Boolean,
+    val data: AuthData? = null,
+    val message: String? = null
+)
+
+data class AuthData(
+    val user: User,
+    val token: String
+)
+
+data class LoginRequest(
+    val email: String,
+    val password: String
+)
+
+data class RegisterRequest(
+    val username: String,
+    val email: String,
+    val password: String,
+    val phone: String,
+    val role: String
+)
+```
+
+### models/Chat.kt
+
+```kotlin
+package com.courier.messenger.models
+
+data class Chat(
+    val _id: String,
+    val participants: List<User>,
+    val type: String,
+    val name: String? = null,
+    val orderRef: OrderRef? = null,
+    val lastMessage: Message? = null,
+    val updatedAt: String? = null
+)
+
+data class OrderRef(
+    val _id: String,
+    val orderNumber: String,
+    val status: String
+)
+
+data class ChatListResponse(
+    val success: Boolean,
+    val data: List<Chat>
+)
+```
+
+### models/Message.kt
+
+```kotlin
+package com.courier.messenger.models
+
+data class Message(
+    val _id: String,
+    val chat: String,
+    val sender: User? = null,
+    val content: String,
+    val messageType: String = "text",
+    val timestamp: String,
+    val readBy: List<ReadReceipt>? = null
+)
+
+data class ReadReceipt(
+    val user: String,
+    val readAt: String
+)
+
+data class MessageListResponse(
+    val success: Boolean,
+    val data: List<Message>,
+    val pagination: Pagination? = null
+)
+
+data class Pagination(
+    val page: Int,
+    val limit: Int,
+    val total: Int,
+    val pages: Int
+)
+
+data class SendMessageRequest(
+    val content: String,
+    val messageType: String = "text"
+)
+
+data class MessageResponse(
+    val success: Boolean,
+    val data: Message
+)
+```
+
+### models/Order.kt
+
+```kotlin
+package com.courier.messenger.models
+
+data class Order(
+    val _id: String,
+    val orderNumber: String,
+    val customer: Customer,
+    val courier: User? = null,
+    val dispatcher: User? = null,
+    val pickupAddress: String,
+    val deliveryAddress: String,
+    val status: String,
+    val items: List<OrderItem>? = null,
+    val priority: String = "normal",
+    val createdAt: String? = null
+)
+
+data class Customer(
+    val name: String,
+    val phone: String,
+    val address: String
+)
+
+data class OrderItem(
+    val name: String,
+    val quantity: Int = 1,
+    val weight: Double? = null
+)
+
+data class OrderListResponse(
+    val success: Boolean,
+    val data: List<Order>
+)
+
+data class StatusUpdateRequest(
+    val newStatus: String,
+    val note: String? = null
+)
+```
+
+### api/ApiService.kt
+
+```kotlin
+package com.courier.messenger.api
+
+import com.courier.messenger.models.*
+import retrofit2.Response
+import retrofit2.http.*
+
+interface ApiService {
+
+    // === Auth ===
+    @POST("api/auth/login")
+    suspend fun login(@Body request: LoginRequest): Response<AuthResponse>
+
+    @POST("api/auth/register")
+    suspend fun register(@Body request: RegisterRequest): Response<AuthResponse>
+
+    @GET("api/auth/me")
+    suspend fun getMe(): Response<AuthResponse>
+
+    @POST("api/auth/logout")
+    suspend fun logout(): Response<AuthResponse>
+
+    // === Chats ===
+    @GET("api/chats")
+    suspend fun getChats(): Response<ChatListResponse>
+
+    @GET("api/chats/{chatId}")
+    suspend fun getChat(@Path("chatId") chatId: String): Response<ChatListResponse>
+
+    // === Messages ===
+    @GET("api/messages/{chatId}")
+    suspend fun getMessages(
+        @Path("chatId") chatId: String,
+        @Query("page") page: Int = 1
+    ): Response<MessageListResponse>
+
+    @POST("api/messages/{chatId}")
+    suspend fun sendMessage(
+        @Path("chatId") chatId: String,
+        @Body request: SendMessageRequest
+    ): Response<MessageResponse>
+
+    // === Orders ===
+    @GET("api/orders")
+    suspend fun getOrders(
+        @Query("status") status: String? = null
+    ): Response<OrderListResponse>
+
+    @POST("api/orders")
+    suspend fun createOrder(@Body order: Map<String, Any>): Response<OrderListResponse>
+
+    @PUT("api/orders/{orderId}/status")
+    suspend fun updateOrderStatus(
+        @Path("orderId") orderId: String,
+        @Body request: StatusUpdateRequest
+    ): Response<OrderListResponse>
+
+    @PUT("api/orders/{orderId}/assign")
+    suspend fun assignCourier(
+        @Path("orderId") orderId: String,
+        @Body body: Map<String, String>
+    ): Response<OrderListResponse>
+}
+```
+# Продолжение кода
+
+## api/RetrofitClient.kt (продолжение)
+
+```kotlin
+package com.courier.messenger.api
+
+import android.content.Context
+import com.courier.messenger.BuildConfig
+import okhttp3.Interceptor
+import okhttp3.OkHttpClient
+import okhttp3.logging.HttpLoggingInterceptor
+import retrofit2.Retrofit
+import retrofit2.converter.gson.GsonConverterFactory
+import java.util.concurrent.TimeUnit
+
+object RetrofitClient {
+
+    private var token: String? = null
+    private var retrofit: Retrofit? = null
+
+    fun setToken(newToken: String?) {
+        token = newToken
+        retrofit = null // Force rebuild
+    }
+
+    fun getToken(): String? = token
+
+    private fun getAuthInterceptor(): Interceptor {
+        return Interceptor { chain ->
+            val originalRequest = chain.request()
+            val builder = originalRequest.newBuilder()
+
+            token?.let {
+                builder.addHeader("Authorization", "Bearer $it")
+            }
+
+            chain.proceed(builder.build())
+        }
+    }
+
+    fun getApiService(): ApiService {
+        if (retrofit == null) {
+            val logging = HttpLoggingInterceptor().apply {
+                level = HttpLoggingInterceptor.Level.BODY
+            }
+
+            val client = OkHttpClient.Builder()
+                .addInterceptor(getAuthInterceptor())
+                .addInterceptor(logging)
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .writeTimeout(30, TimeUnit.SECONDS)
+                .build()
+
+            retrofit = Retrofit.Builder()
+                .baseUrl(BuildConfig.BASE_URL)
+                .client(client)
+                .addConverterFactory(GsonConverterFactory.create())
+                .build()
+        }
+
+        return retrofit!!.create(ApiService::class.java)
+    }
+
+    // Хранение токена в SharedPreferences
+    fun saveToken(context: Context, token: String) {
+        val prefs = context.getSharedPreferences("courier_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("auth_token", token).apply()
+        setToken(token)
+    }
+
+    fun loadToken(context: Context): String? {
+        val prefs = context.getSharedPreferences("courier_prefs", Context.MODE_PRIVATE)
+        val savedToken = prefs.getString("auth_token", null)
+        savedToken?.let { setToken(it) }
+        return savedToken
+    }
+
+    fun clearToken(context: Context) {
+        val prefs = context.getSharedPreferences("courier_prefs", Context.MODE_PRIVATE)
+        prefs.edit().remove("auth_token").remove("user_data").apply()
+        setToken(null)
+    }
+
+    fun saveUser(context: Context, userJson: String) {
+        val prefs = context.getSharedPreferences("courier_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("user_data", userJson).apply()
+    }
+
+    fun loadUser(context: Context): String? {
+        val prefs = context.getSharedPreferences("courier_prefs", Context.MODE_PRIVATE)
+        return prefs.getString("user_data", null)
+    }
+}
+```
+
+### socket/SocketManager.kt
+
+```kotlin
+package com.courier.messenger.socket
+
+import android.util.Log
+import com.courier.messenger.api.RetrofitClient
+import io.socket.client.IO
+import io.socket.client.Socket
+import io.socket.emitter.Emitter
+import org.json.JSONObject
+import java.net.URI
+
+object SocketManager {
+
+    private const val TAG = "SocketManager"
+    private const val SERVER_URL = "http://10.0.2.2:5000"
+
+    private var socket: Socket? = null
+    private val listeners = mutableMapOf<String, MutableList<(Any) -> Unit>>()
+
+    fun connect() {
+        try {
+            val token = RetrofitClient.getToken() ?: return
+
+            val options = IO.Options().apply {
+                auth = mapOf("token" to token)
+                transports = arrayOf("websocket", "polling")
+                reconnection = true
+                reconnectionAttempts = 10
+                reconnectionDelay = 1000
+                timeout = 10000
+            }
+
+            socket = IO.socket(URI.create(SERVER_URL), options)
+
+            socket?.on(Socket.EVENT_CONNECT) {
+                Log.d(TAG, "✅ Socket подключён")
+            }
+
+            socket?.on(Socket.EVENT_DISCONNECT) {
+                Log.d(TAG, "❌ Socket отключён")
+            }
+
+            socket?.on(Socket.EVENT_CONNECT_ERROR) { args ->
+                Log.e(TAG, "Socket ошибка: ${args.firstOrNull()}")
+            }
+
+            // Обработка входящих сообщений
+            socket?.on("new_message") { args ->
+                args.firstOrNull()?.let { data ->
+                    Log.d(TAG, "📩 Новое сообщение: $data")
+                    notifyListeners("new_message", data)
+                }
+            }
+
+            // Статус пользователя
+            socket?.on("user_online") { args ->
+                notifyListeners("user_online", args.firstOrNull() ?: return@on)
+            }
+
+            socket?.on("user_offline") { args ->
+                notifyListeners("user_offline", args.firstOrNull() ?: return@on)
+            }
+
+            // Индикатор печати
+            socket?.on("user_typing") { args ->
+                notifyListeners("user_typing", args.firstOrNull() ?: return@on)
+            }
+
+            socket?.on("user_stop_typing") { args ->
+                notifyListeners("user_stop_typing", args.firstOrNull() ?: return@on)
+            }
+
+            // Обновления заказов
+            socket?.on("order_assigned") { args ->
+                notifyListeners("order_assigned", args.firstOrNull() ?: return@on)
+            }
+
+            socket?.on("status_update") { args ->
+                notifyListeners("status_update", args.firstOrNull() ?: return@on)
+            }
+
+            // Локация курьера
+            socket?.on("courier_location_update") { args ->
+                notifyListeners("courier_location_update", args.firstOrNull() ?: return@on)
+            }
+
+            socket?.connect()
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Ошибка подключения Socket: ${e.message}")
+        }
+    }
+
+    fun disconnect() {
+        socket?.disconnect()
+        socket?.off()
+        socket = null
+        listeners.clear()
+    }
+
+    fun joinChat(chatId: String) {
+        socket?.emit("join_chat", chatId)
+        Log.d(TAG, "Вошёл в чат: $chatId")
+    }
+
+    fun leaveChat(chatId: String) {
+        socket?.emit("leave_chat", chatId)
+    }
+
+    fun sendTyping(chatId: String) {
+        val data = JSONObject().put("chatId", chatId)
+        socket?.emit("typing", data)
+    }
+
+    fun sendStopTyping(chatId: String) {
+        val data = JSONObject().put("chatId", chatId)
+        socket?.emit("stop_typing", data)
+    }
+
+    fun updateLocation(lat: Double, lng: Double) {
+        val data = JSONObject().apply {
+            put("lat", lat)
+            put("lng", lng)
+        }
+        socket?.emit("update_location", data)
+    }
+
+    // Система подписок
+    fun addEventListener(event: String, listener: (Any) -> Unit) {
+        listeners.getOrPut(event) { mutableListOf() }.add(listener)
+    }
+
+    fun removeEventListener(event: String, listener: (Any) -> Unit) {
+        listeners[event]?.remove(listener)
+    }
+
+    fun removeAllListeners(event: String) {
+        listeners.remove(event)
+    }
+
+    private fun notifyListeners(event: String, data: Any) {
+        listeners[event]?.forEach { listener ->
+            try {
+                listener(data)
+            } catch (e: Exception) {
+                Log.e(TAG, "Ошибка в listener: ${e.message}")
+            }
+        }
+    }
+
+    fun isConnected(): Boolean = socket?.connected() == true
+}
+```
+
+### repository/ChatRepository.kt
+
+```kotlin
+package com.courier.messenger.repository
+
+import com.courier.messenger.api.RetrofitClient
+import com.courier.messenger.models.*
+
+class ChatRepository {
+
+    private val api = RetrofitClient.getApiService()
+
+    suspend fun getChats(): Result<List<Chat>> {
+        return try {
+            val response = api.getChats()
+            if (response.isSuccessful && response.body()?.success == true) {
+                Result.success(response.body()!!.data)
+            } else {
+                Result.failure(Exception("Ошибка загрузки чатов"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getMessages(chatId: String, page: Int = 1): Result<List<Message>> {
+        return try {
+            val response = api.getMessages(chatId, page)
+            if (response.isSuccessful && response.body()?.success == true) {
+                Result.success(response.body()!!.data)
+            } else {
+                Result.failure(Exception("Ошибка загрузки сообщений"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun sendMessage(chatId: String, content: String, type: String = "text"): Result<Message> {
+        return try {
+            val response = api.sendMessage(chatId, SendMessageRequest(content, type))
+            if (response.isSuccessful && response.body()?.success == true) {
+                Result.success(response.body()!!.data)
+            } else {
+                Result.failure(Exception("Ошибка отправки сообщения"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+}
+```
+
+### repository/OrderRepository.kt
+
+```kotlin
+package com.courier.messenger.repository
+
+import com.courier.messenger.api.RetrofitClient
+import com.courier.messenger.models.*
+
+class OrderRepository {
+
+    private val api = RetrofitClient.getApiService()
+
+    suspend fun getOrders(status: String? = null): Result<List<Order>> {
+        return try {
+            val response = api.getOrders(status)
+            if (response.isSuccessful && response.body()?.success == true) {
+                Result.success(response.body()!!.data)
+            } else {
+                Result.failure(Exception("Ошибка загрузки заказов"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateStatus(orderId: String, newStatus: String, note: String? = null): Result<Boolean> {
+        return try {
+            val response = api.updateOrderStatus(
+                orderId,
+                StatusUpdateRequest(newStatus, note)
+            )
+            if (response.isSuccessful) {
+                Result.success(true)
+            } else {
+                val errorBody = response.errorBody()?.string()
+                Result.failure(Exception(errorBody ?: "Ошибка обновления статуса"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun assignCourier(orderId: String, courierId: String): Result<Boolean> {
+        return try {
+            val response = api.assignCourier(orderId, mapOf("courierId" to courierId))
+            if (response.isSuccessful) {
+                Result.success(true)
+            } else {
+                Result.failure(Exception("Ошибка назначения курьера"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+}
+```
+
+### ui/auth/LoginActivity.kt
+
+```kotlin
+package com.courier.messenger.ui.auth
+
+import android.content.Intent
+import android.os.Bundle
+import android.view.View
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
+import com.courier.messenger.MainActivity
+import com.courier.messenger.api.RetrofitClient
+import com.courier.messenger.databinding.ActivityLoginBinding
+import com.courier.messenger.models.LoginRequest
+import com.courier.messenger.models.RegisterRequest
+import com.google.gson.Gson
+import kotlinx.coroutines.launch
+
+class LoginActivity : AppCompatActivity() {
+
+    private lateinit var binding: ActivityLoginBinding
+    private var isRegisterMode = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        binding = ActivityLoginBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+
+        // Проверяем сохранённый токен
+        val savedToken = RetrofitClient.loadToken(this)
+        if (savedToken != null) {
+            navigateToMain()
+            return
+        }
+
+        setupUI()
+    }
+
+    private fun setupUI() {
+        binding.btnLogin.setOnClickListener {
+            if (isRegisterMode) performRegister() else performLogin()
+        }
+
+        binding.tvToggleMode.setOnClickListener {
+            isRegisterMode = !isRegisterMode
+            updateUI()
+        }
+
+        updateUI()
+    }
+
+    private fun updateUI() {
+        if (isRegisterMode) {
+            binding.tvTitle.text = "🚚 Регистрация"
+            binding.btnLogin.text = "Зарегистрироваться"
+            binding.tvToggleMode.text = "Уже есть аккаунт? Войти"
+            binding.layoutRegisterFields.visibility = View.VISIBLE
+        } else {
+            binding.tvTitle.text = "🚚 Courier Messenger"
+            binding.btnLogin.text = "Войти"
+            binding.tvToggleMode.text = "Нет аккаунта? Зарегистрироваться"
+            binding.layoutRegisterFields.visibility = View.GONE
+        }
+    }
+
+    private fun performLogin() {
+        val email = binding.etEmail.text.toString().trim()
+        val password = binding.etPassword.text.toString().trim()
+
+        if (email.isEmpty() || password.isEmpty()) {
+            Toast.makeText(this, "Заполните все поля", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        setLoading(true)
+
+        lifecycleScope.launch {
+            try {
+                val api = RetrofitClient.getApiService()
+                val response = api.login(LoginRequest(email, password))
+
+                if (response.isSuccessful && response.body()?.success == true) {
+                    val data = response.body()!!.data!!
+                    RetrofitClient.saveToken(this@LoginActivity, data.token)
+                    RetrofitClient.saveUser(this@LoginActivity, Gson().toJson(data.user))
+                    navigateToMain()
+                } else {
+                    val msg = response.body()?.message ?: "Ошибка входа"
+                    Toast.makeText(this@LoginActivity, msg, Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(
+                    this@LoginActivity,
+                    "Ошибка сети: ${e.localizedMessage}",
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                setLoading(false)
+            }
+        }
+    }
+
+    private fun performRegister() {
+        val username = binding.etUsername.text.toString().trim()
+        val email = binding.etEmail.text.toString().trim()
+        val password = binding.etPassword.text.toString().trim()
+        val phone = binding.etPhone.text.toString().trim()
+        val role = if (binding.spinnerRole.selectedItemPosition == 0) "courier" else "dispatcher"
+
+        if (username.isEmpty() || email.isEmpty() || password.isEmpty() || phone.isEmpty()) {
+            Toast.makeText(this, "Заполните все поля", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        setLoading(true)
+
+        lifecycleScope.launch {
+            try {
+                val api = RetrofitClient.getApiService()
+                val response = api.register(
+                    RegisterRequest(username, email, password, phone, role)
+                )
+
+                if (response.isSuccessful && response.body()?.success == true) {
+                    val data = response.body()!!.data!!
+                    RetrofitClient.saveToken(this@LoginActivity, data.token)
+                    RetrofitClient.saveUser(this@LoginActivity, Gson().toJson(data.user))
+                    navigateToMain()
+                } else {
+                    val msg = response.body()?.message ?: "Ошибка регистрации"
+                    Toast.makeText(this@LoginActivity, msg, Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(
+                    this@LoginActivity,
+                    "Ошибка сети: ${e.localizedMessage}",
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                setLoading(false)
+            }
+        }
+    }
+
+    private fun setLoading(loading: Boolean) {
+        binding.btnLogin.isEnabled = !loading
+        binding.progressBar.visibility = if (loading) View.VISIBLE else View.GONE
+        binding.btnLogin.text = if (loading) "Подождите..." else {
+            if (isRegisterMode) "Зарегистрироваться" else "Войти"
+        }
+    }
+
+    private fun navigateToMain() {
+        startActivity(Intent(this, MainActivity::class.java))
+        finish()
+    }
+}
+```
+
+### ui/auth/LoginViewModel.kt
+
+```kotlin
+package com.courier.messenger.ui.auth
+
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.courier.messenger.api.RetrofitClient
+import com.courier.messenger.models.LoginRequest
+import com.courier.messenger.models.User
+import kotlinx.coroutines.launch
+
+class LoginViewModel : ViewModel() {
+
+    private val _user = MutableLiveData<User?>()
+    val user: LiveData<User?> = _user
+
+    private val _error = MutableLiveData<String?>()
+    val error: LiveData<String?> = _error
+
+    private val _loading = MutableLiveData<Boolean>()
+    val loading: LiveData<Boolean> = _loading
+
+    fun login(email: String, password: String) {
+        viewModelScope.launch {
+            _loading.value = true
+            _error.value = null
+            try {
+                val api = RetrofitClient.getApiService()
+                val response = api.login(LoginRequest(email, password))
+
+                if (response.isSuccessful && response.body()?.success == true) {
+                    val data = response.body()!!.data!!
+                    RetrofitClient.setToken(data.token)
+                    _user.value = data.user
+                } else {
+                    _error.value = response.body()?.message ?: "Ошибка входа"
+                }
+            } catch (e: Exception) {
+                _error.value = e.localizedMessage ?: "Ошибка сети"
+            } finally {
+                _loading.value = false
+            }
+        }
+    }
+}
+```
+
+### ui/chat/ChatViewModel.kt
+
+```kotlin
+package com.courier.messenger.ui.chat
+
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.courier.messenger.models.Chat
+import com.courier.messenger.models.Message
+import com.courier.messenger.repository.ChatRepository
+import kotlinx.coroutines.launch
+
+class ChatViewModel : ViewModel() {
+
+    private val repository = ChatRepository()
+
+    // Список чатов
+    private val _chats = MutableLiveData<List<Chat>>()
+    val chats: LiveData<List<Chat>> = _chats
+
+    // Сообщения текущего чата
+    private val _messages = MutableLiveData<List<Message>>()
+    val messages: LiveData<List<Message>> = _messages
+
+    // Текущий активный чат
+    private val _activeChat = MutableLiveData<Chat?>()
+    val activeChat: LiveData<Chat?> = _activeChat
+
+    // Состояния загрузки
+    private val _loading = MutableLiveData<Boolean>()
+    val loading: LiveData<Boolean> = _loading
+
+    private val _error = MutableLiveData<String?>()
+    val error: LiveData<String?> = _error
+
+    fun loadChats() {
+        viewModelScope.launch {
+            _loading.value = true
+            repository.getChats().fold(
+                onSuccess = { chatList ->
+                    _chats.value = chatList
+                    _error.value = null
+                },
+                onFailure = { e ->
+                    _error.value = e.message
+                }
+            )
+            _loading.value = false
+        }
+    }
+
+    fun selectChat(chat: Chat) {
+        _activeChat.value = chat
+        loadMessages(chat._id)
+    }
+
+    fun loadMessages(chatId: String) {
+        viewModelScope.launch {
+            _loading.value = true
+            repository.getMessages(chatId).fold(
+                onSuccess = { messageList ->
+                    _messages.value = messageList
+                    _error.value = null
+                },
+                onFailure = { e ->
+                    _error.value = e.message
+                }
+            )
+            _loading.value = false
+        }
+    }
+
+    fun sendMessage(chatId: String, content: String) {
+        if (content.isBlank()) return
+
+        viewModelScope.launch {
+            repository.sendMessage(chatId, content).fold(
+                onSuccess = { message ->
+                    // Добавляем сообщение в список
+                    val current = _messages.value?.toMutableList() ?: mutableListOf()
+                    current.add(message)
+                    _messages.value = current
+                },
+                onFailure = { e ->
+                    _error.value = e.message
+                }
+            )
+        }
+    }
+
+    fun addIncomingMessage(message: Message) {
+        val current = _messages.value?.toMutableList() ?: mutableListOf()
+        // Избегаем дублирования
+        if (current.none { it._id == message._id }) {
+            current.add(message)
+            _messages.value = current
+        }
+    }
+}
+```
+
+### ui/chat/ChatListFragment.kt
+
+```kotlin
+package com.courier.messenger.ui.chat
+
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.TextView
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.activityViewModels
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.courier.messenger.R
+import com.courier.messenger.models.Chat
+import com.courier.messenger.models.User
+import com.google.gson.Gson
+
+class ChatListFragment : Fragment() {
+
+    private val viewModel: ChatViewModel by activityViewModels()
+    private lateinit var recyclerView: RecyclerView
+    private lateinit var emptyView: TextView
+    private var currentUser: User? = null
+
+    interface OnChatSelectedListener {
+        fun onChatSelected(chat: Chat)
+    }
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View? {
+        return inflater.inflate(R.layout.fragment_chat_list, container, false)
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        recyclerView = view.findViewById(R.id.recyclerViewChats)
+        emptyView = view.findViewById(R.id.tvEmpty)
+
+        // Получаем текущего пользователя
+        val prefs = requireContext().getSharedPreferences("courier_prefs", 0)
+        val userJson = prefs.getString("user_data", null)
+        currentUser = userJson?.let { Gson().fromJson(it, User::class.java) }
+
+        recyclerView.layoutManager = LinearLayoutManager(context)
+
+        viewModel.chats.observe(viewLifecycleOwner) { chats ->
+            if (chats.isNullOrEmpty()) {
+                recyclerView.visibility = View.GONE
+                emptyView.visibility = View.VISIBLE
+            } else {
+                recyclerView.visibility = View.VISIBLE
+                emptyView.visibility = View.GONE
+                recyclerView.adapter = ChatListAdapter(chats, currentUser) { chat ->
+                    viewModel.selectChat(chat)
+                    (activity as? OnChatSelectedListener)?.onChatSelected(chat)
+                }
+            }
+        }
+
+        viewModel.loadChats()
+    }
+}
+
+// ===== Adapter =====
+class ChatListAdapter(
+    private val chats: List<Chat>,
+    private val currentUser: User?,
+    private val onClick: (Chat) -> Unit
+) : RecyclerView.Adapter<ChatListAdapter.ViewHolder>() {
+
+    class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val tvName: TextView = view.findViewById(R.id.tvChatName)
+        val tvLastMessage: TextView = view.findViewById(R.id.tvLastMessage)
+        val tvTime: TextView = view.findViewById(R.id.tvTime)
+        val tvAvatar: TextView = view.findViewById(R.id.tvAvatar)
+        val tvBadge: TextView = view.findViewById(R.id.tvBadge)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+        val view = LayoutInflater.from(parent.context)
+            .inflate(R.layout.item_chat, parent, false)
+        return ViewHolder(view)
+    }
+
+    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+        val chat = chats[position]
+
+        // Имя чата
+        val chatName = when {
+            !chat.name.isNullOrEmpty() -> chat.name
+            chat.type == "direct" -> {
+                chat.participants.firstOrNull { it._id != currentUser?._id }?.username
+                    ?: "Неизвестный"
+            }
+            else -> "Групповой чат"
+        }
+
+        holder.tvName.text = chatName
+        holder.tvLastMessage.text = chat.lastMessage?.content ?: "Нет сообщений"
+
+        // Аватар
+        holder.tvAvatar.text = if (chat.type == "order") "📦" else chatName.first().uppercase()
+
+        // Время
+        chat.updatedAt?.let {
+            try {
+                holder.tvTime.text = formatRelativeTime(it)
+            } catch (e: Exception) {
+                holder.tvTime.text = ""
+            }
+        }
+
+        // Бадж типа чата
+        when (chat.type) {
+            "order" -> {
+                holder.tvBadge.visibility = View.VISIBLE
+                holder.tvBadge.text = chat.orderRef?.status ?: "order"
+            }
+            else -> holder.tvBadge.visibility = View.GONE
+        }
+
+        holder.itemView.setOnClickListener { onClick(chat) }
+    }
+
+    override fun getItemCount(): Int = chats.size
+
+    private fun formatRelativeTime(isoDate: String): String {
+        return try {
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
+            val date = sdf.parse(isoDate.substringBefore("."))
+            val now = System.currentTimeMillis()
+            val diff = now - (date?.time ?: now)
+            when {
+                diff < 60_000 -> "сейчас"
+                diff < 3_600_000 -> "${diff / 60_000}м"
+                diff < 86_400_000 -> "${diff / 3_600_000}ч"
+                else -> "${diff / 86_400_000}д"
+            }
+        } catch (e: Exception) {
+            ""
+        }
+    }
+}
+```
+
+### ui/chat/ChatFragment.kt
+
+```kotlin
+package com.courier.messenger.ui.chat
+
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.EditText
+import android.widget.ImageButton
+import android.widget.TextView
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.activityViewModels
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.courier.messenger.R
+import com.courier.messenger.models.Chat
+import com.courier.messenger.models.Message
+import com.courier.messenger.models.User
+import com.courier.messenger.socket.SocketManager
+import com.google.gson.Gson
+import org.json.JSONObject
+
+class ChatFragment : Fragment() {
+
+    private val viewModel: ChatViewModel by activityViewModels()
+    private lateinit var recyclerView: RecyclerView
+    private lateinit var etMessage: EditText
+    private lateinit var btnSend: ImageButton
+    private lateinit var tvChatTitle: TextView
+    private lateinit var tvTyping: TextView
+    private var currentChat: Chat? = null
+    private var currentUser: User? = null
+    private val handler = Handler(Looper.getMainLooper())
+
+    companion object {
+        fun newInstance(chatId: String): ChatFragment {
+            return ChatFragment().apply {
+                arguments = Bundle().apply {
+                    putString("chatId", chatId)
+                }
+            }
+        }
+    }
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View? {
+        return inflater.inflate(R.layout.fragment_chat, container, false)
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        recyclerView = view.findViewById(R.id.recyclerViewMessages)
+        etMessage = view.findViewById(R.id.etMessage)
+        btnSend = view.findViewById(R.id.btnSend)
+        tvChatTitle = view.findViewById(R.id.tvChatTitle)
+        tvTyping = view.findViewById(R.id.tvTyping)
+
+        // Текущий пользователь
+        val prefs = requireContext().getSharedPreferences("courier_prefs", 0)
+        val userJson = prefs.getString("user_data", null)
+        currentUser = userJson?.let { Gson().fromJson(it, User::class.java) }
+
+        val layoutManager = LinearLayoutManager(context)
+        layoutManager.stackFromEnd = true
+        recyclerView.layoutManager = layoutManager
+
+        // Подписка на активный чат
+        viewModel.activeChat.observe(viewLifecycleOwner) { chat ->
+            chat?.let {
+                currentChat = it
+                tvChatTitle.text = it.name ?: "Чат"
+                setupSocket(it._id)
+            }
+        }
+
+        // Подписка на сообщения
+        viewModel.messages.observe(viewLifecycleOwner) { messages ->
+            recyclerView.adapter = MessageAdapter(messages, currentUser)
+            if (messages.isNotEmpty()) {
+                recyclerView.scrollToPosition(messages.size - 1)
+            }
+        }
+
+        // Кнопка отправки
+        btnSend.setOnClickListener {
+            val content = etMessage.text.toString().trim()
+            if (content.isNotEmpty() && currentChat != null) {
+                viewModel.sendMessage(currentChat!!._id, content)
+                etMessage.text.clear()
+                currentChat?.let { SocketManager.sendStopTyping(it._id) }
+            }
+        }
+
+        // Индикатор печати
+        etMessage.addTextChangedListener(object : TextWatcher {
+            private var typingTimer: Runnable? = null
+
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                currentChat?.let { SocketManager.sendTyping(it._id) }
+                typingTimer?.let { handler.removeCallbacks(it) }
+                typingTimer = Runnable {
+                    currentChat?.let { SocketManager.sendStopTyping(it._id) }
+                }
+                handler.postDelayed(typingTimer!!, 2000)
+            }
+            override fun afterTextChanged(s: Editable?) {}
+        })
+    }
+
+    private fun setupSocket(chatId: String) {
+        SocketManager.joinChat(chatId)
+
+        SocketManager.addEventListener("new_message") { data ->
+            try {
+                val json = data as? JSONObject ?: JSONObject(data.toString())
+                val message = Gson().fromJson(json.toString(), Message::class.java)
+                if (message.chat == chatId) {
+                    handler.post {
+                        viewModel.addIncomingMessage(message)
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        SocketManager.addEventListener("user_typing") { data ->
+            try {
+                val json = data as? JSONObject ?: JSONObject(data.toString())
+                val typingChatId = json.optString("chatId")
+                val username = json.optString("username")
+                if (typingChatId == chatId) {
+                    handler.post {
+                        tvTyping.visibility = View.VISIBLE
+                        tvTyping.text = "$username печатает..."
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+
+        SocketManager.addEventListener("user_stop_typing") { data ->
+            try {
+                val json = data as? JSONObject ?: JSONObject(data.toString())
+                val typingChatId = json.optString("chatId")
+                if (typingChatId == chatId) {
+                    handler.post {
+                        tvTyping.visibility = View.GONE
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        currentChat?.let {
+            SocketManager.leaveChat(it._id)
+            SocketManager.removeAllListeners("new_message")
+            SocketManager.removeAllListeners("user_typing")
+            SocketManager.removeAllListeners("user_stop_typing")
+        }
+    }
+}
+
+// ===== Message Adapter =====
+class MessageAdapter(
+    private val messages: List<Message>,
+    private val currentUser: User?
+) : RecyclerView.Adapter<MessageAdapter.ViewHolder>() {
+
+    companion object {
+        private const val TYPE_SENT = 0
+        private const val TYPE_RECEIVED = 1
+        private const val TYPE_SYSTEM = 2
+    }
+
+    class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val tvContent: TextView = view.findViewById(R.id.tvMessageContent)
+        val tvTime: TextView = view.findViewById(R.id.tvMessageTime)
+        val tvSender: TextView? = view.findViewById(R.id.tvSenderName)
+    }
+
+    override fun getItemViewType(position: Int): Int {
+        val msg = messages[position]
+        return when {
+            msg.messageType == "system" || msg.messageType == "status_update" -> TYPE_SYSTEM
+            msg.sender?._id == currentUser?._id -> TYPE_SENT
+            else -> TYPE_RECEIVED
+        }
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+        val layoutId = when (viewType) {
+            TYPE_SENT -> R.layout.item_message_sent
+            TYPE_RECEIVED -> R.layout.item_message_received
+            else -> R.layout.item_message_system
+        }
+        val view = LayoutInflater.from(parent.context).inflate(layoutId, parent, false)
+        return ViewHolder(view)
+    }
+
+    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+        val msg = messages[position]
+        holder.tvContent.text = msg.content
+        holder.tvTime.text = formatTime(msg.timestamp)
+        holder.tvSender?.text = msg.sender?.let { "${it.username} (${it.role})" }
+    }
+
+    override fun getItemCount(): Int = messages.size
+
+    private fun formatTime(isoDate: String): String {
+        return try {
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault())
+            val date = sdf.parse(isoDate.substringBefore("."))
+            val outFormat = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+            outFormat.format(date!!)
+        } catch (e: Exception) {
+            ""
+        }
+    }
+}
+```
+
+### ui/orders/OrderViewModel.kt
+
+```kotlin
+package com.courier.messenger.ui.orders
+
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.courier.messenger.models.Order
+import com.courier.messenger.repository.OrderRepository
+import kotlinx.coroutines.launch
+
+class OrderViewModel : ViewModel() {
+
+    private val repository = OrderRepository()
+
+    private val _orders = MutableLiveData<List<Order>>()
+    val orders: LiveData<List<Order>> = _orders
+
+    private val _loading = MutableLiveData<Boolean>()
+    val loading: LiveData<Boolean> = _loading
+
+    private val _error = MutableLiveData<String?>()
+    val error: LiveData<String?> = _error
+
+    private val _statusUpdated = MutableLiveData<Boolean>()
+    val statusUpdated: LiveData<Boolean> = _statusUpdated
+
+    fun loadOrders(status: String? = null) {
+        viewModelScope.launch {
+            _loading.value = true
+            repository.getOrders(status).fold(
+                onSuccess = { orderList ->
+                    _orders.value = orderList
+                    _error.value = null
+                },
+                onFailure = { e ->
+                    _error.value = e.message
+                }
+            )
+            _loading.value = false
+        }
+    }
+
+    fun updateOrderStatus(orderId: String, newStatus: String, note: String? = null) {
+        viewModelScope.launch {
+            _loading.value = true
+            repository.updateStatus(orderId, newStatus, note).fold(
+                onSuccess = {
+                    _statusUpdated.value = true
+                    loadOrders() // Перезагрузить
+                },
+                onFailure = { e ->
+                    _error.value = e.message
+                    _statusUpdated.value = false
+                }
+            )
+            _loading.value = false
+        }
+    }
+
+    fun assignCourier(orderId: String, courierId: String) {
+        viewModelScope.launch {
+            _loading.value = true
+            repository.assignCourier(orderId, courierId).fold(
+                onSuccess = {
+                    loadOrders()
+                },
+                onFailure = { e ->
+                    _error.value = e.message
+                }
+            )
+            _loading.value = false
+        }
+    }
+}
+```
+
+### ui/orders/OrderListFragment.kt
+
+```kotlin
+package com.courier.messenger.ui.orders
+
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Button
+import android.widget.TextView
+import android.widget.Toast
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.viewModels
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.courier.messenger.R
+import com.courier.messenger.models.Order
+import com.courier.messenger.models.User
+import com.google.gson.Gson
+
+class OrderListFragment : Fragment() {
+
+    private val viewModel: OrderViewModel by viewModels()
+    private lateinit var recyclerView: RecyclerView
+    private lateinit var tvEmpty: TextView
+    private var currentUser: User? = null
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View? {
+        return inflater.inflate(R.layout.fragment_orders, container, false)
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        recyclerView = view.findViewById(R.id.recyclerViewOrders)
+        tvEmpty = view.findViewById(R.id.tvEmptyOrders)
+
+        // Текущий пользователь
+        val prefs = requireContext().getSharedPreferences("courier_prefs", 0)
+        val userJson = prefs.getString("user_data", null)
+        currentUser = userJson?.let { Gson().fromJson(it, User::class.java) }
+
+        recyclerView.layoutManager = LinearLayoutManager(context)
+
+        viewModel.orders.observe(viewLifecycleOwner) { orders ->
+            if (orders.isNullOrEmpty()) {
+                recyclerView.visibility = View.GONE
+                tvEmpty.visibility = View.VISIBLE
+            } else {
+                recyclerView.visibility = View.VISIBLE
+                tvEmpty.visibility = View.GONE
+                recyclerView.adapter = OrderAdapter(orders, currentUser) { order, action ->
+                    handleOrderAction(order, action)
+                }
+            }
+        }
+
+        viewModel.error.observe(viewLifecycleOwner) { error ->
+            error?.let {
+                Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+            }
+        }
+
+        viewModel.statusUpdated.observe(viewLifecycleOwner) { success ->
+            if (success) {
+                Toast.makeText(context, "Статус обновлён ✅", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        viewModel.loadOrders()
+    }
+
+    private fun handleOrderAction(order: Order, action: String) {
+        val statusMap = mapOf(
+            "pick_up" to "picked_up",
+            "transit" to "in_transit",
+            "deliver" to "delivered",
+            "problem" to "problem"
+        )
+
+        statusMap[action]?.let { newStatus ->
+            viewModel.updateOrderStatus(order._id, newStatus)
+        }
+    }
+}
+
+// ===== Order Adapter =====
+class OrderAdapter(
+    private val orders: List<Order>,
+    private val currentUser: User?,
+    private val onAction: (Order, String) -> Unit
+) : RecyclerView.Adapter<OrderAdapter.ViewHolder>() {
+
+    class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val tvOrderNumber: TextView = view.findViewById(R.id.tvOrderNumber)
+        val tvAddresses: TextView = view.findViewById(R.id.tvAddresses)
+        val tvCustomer: TextView = view.findViewById(R.id.tvCustomer)
+        val tvStatus: TextView = view.findViewById(R.id.tvStatus)
+        val tvCourier: TextView = view.findViewById(R.id.tvCourier)
+        val btnAction: Button = view.findViewById(R.id.btnAction)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+        val view = LayoutInflater.from(parent.context)
+            .inflate(R.layout.item_order, parent, false)
+        return ViewHolder(view)
+    }
+
+    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+        val order = orders[position]
+
+        holder.tvOrderNumber.text = order.orderNumber
+        holder.tvAddresses.text = "📍 ${order.pickupAddress} → ${order.deliveryAddress}"
+        holder.tvCustomer.text = "👤 ${order.customer.name} • ${order.customer.phone}"
+        holder.tvCourier.text = order.courier?.let { "🚴 ${it.username}" } ?: ""
+
+        // Статус
+        val statusLabels = mapOf(
+            "created" to "🆕 Создан",
+            "assigned" to "👤 Назначен",
+            "picked_up" to "📦 Забран",
+            "in_transit" to "🚗 В пути",
+            "delivered" to "✅ Доставлен",
+            "problem" to "⚠️ Проблема",
+            "cancelled" to "❌ Отменён"
+        )
+        holder.tvStatus.text = statusLabels[order.status] ?: order.status
+
+        // Кнопка действия (для курьера)
+        if (currentUser?.role == "courier") {
+            when (order.status) {
+                "assigned" -> {
+                    holder.btnAction.visibility = View.VISIBLE
+                    holder.btnAction.text = "📦 Забрал"
+                    holder.btnAction.setOnClickListener { onAction(order, "pick_up") }
+                }
+                "picked_up" -> {
+                    holder.btnAction.visibility = View.VISIBLE
+                    holder.btnAction.text = "🚗 В пути"
+                    holder.btnAction.setOnClickListener { onAction(order, "transit") }
+                }
+                "in_transit" -> {
+                    holder.btnAction.visibility = View.VISIBLE
+                    holder.btnAction.text = "✅ Доставил"
+                    holder.btnAction.setOnClickListener { onAction(order, "deliver") }
+                }
+                else -> holder.btnAction.visibility = View.GONE
+            }
+        } else {
+            holder.btnAction.visibility = View.GONE
+        }
+    }
+
+    override fun getItemCount(): Int = orders.size
+}
+```
+
+### MainActivity.kt
+
+```kotlin
+package com.courier.messenger
+
+import android.content.Intent
+import android.os.Bundle
+import android.view.MenuItem
+import androidx.appcompat.app.AppCompatActivity
+import androidx.fragment.app.Fragment
+import com.courier.messenger.api.RetrofitClient
+import com.courier.messenger.databinding.ActivityMainBinding
+import com.courier.messenger.models.Chat
+import com.courier.messenger.socket.SocketManager
+import com.courier.messenger.ui.auth.LoginActivity
+import com.courier.messenger.ui.chat.ChatFragment
+import com.courier.messenger.ui.chat.ChatListFragment
+import com.courier.messenger.ui.orders.OrderListFragment
+import com.google.android.material.bottomnavigation.BottomNavigationView
+
+class MainActivity : AppCompatActivity(), ChatListFragment.OnChatSelectedListener {
+
+    private lateinit var binding: ActivityMainBinding
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+
+        // Проверяем авторизацию
+        val token = RetrofitClient.loadToken(this)
+        if (token == null) {
+            navigateToLogin()
+            return
+        }
+
+        // Подключаем Socket
+        SocketManager.connect()
+
+        // Настраиваем навигацию
+        setupBottomNavigation()
+
+        // По умолчанию — чаты
+        if (savedInstanceState == null) {
+            loadFragment(ChatListFragment())
+        }
+    }
+
+    private fun setupBottomNavigation() {
+        binding.bottomNavigation.setOnItemSelectedListener { item: MenuItem ->
+            when (item.itemId) {
+                R.id.nav_chats -> {
+                    loadFragment(ChatListFragment())
+                    true
+                }
+                R.id.nav_orders -> {
+                    loadFragment(OrderListFragment())
+                    true
+                }
+                R.id.nav_logout -> {
+                    performLogout()
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun loadFragment(fragment: Fragment) {
+        supportFragmentManager.beginTransaction()
+            .replace(R.id.fragmentContainer, fragment)
+            .commit()
+    }
+
+    override fun onChatSelected(chat: Chat) {
+        val fragment = ChatFragment.newInstance(chat._id)
+        supportFragmentManager.beginTransaction()
+            .replace(R.id.fragmentContainer, fragment)
+            .addToBackStack(null)
+            .commit()
+    }
+
+    private fun performLogout() {
+        SocketManager.disconnect()
+        RetrofitClient.clearToken(this)
+        navigateToLogin()
+    }
+
+    private fun navigateToLogin() {
+        startActivity(Intent(this, LoginActivity::class.java))
+        finish()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        SocketManager.disconnect()
+    }
+}
+```
+
+---
+
+## XML Layout файлы (Android)
+
+### res/layout/activity_login.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#4F46E5"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="32dp">
+
+        <TextView
+            android:id="@+id/tvTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="32dp"
+            android:text="🚚 Courier Messenger"
+            android:textColor="@android:color/white"
+            android:textSize="28sp"
+            android:textStyle="bold" />
+
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:cardCornerRadius="16dp"
+            app:cardElevation="8dp"
+            xmlns:app="http://schemas.android.com/apk/res-auto">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="24dp">
+
+                <!-- Поля регистрации (скрыты по умолчанию) -->
+                <LinearLayout
+                    android:id="@+id/layoutRegisterFields"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="12dp"
+                        android:hint="Имя пользователя">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/etUsername"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="text" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="12dp"
+                        android:hint="Телефон">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/etPhone"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="phone" />
+                    </com.google.android.material.textfield.TextInputLayout>
+
+                    <Spinner
+                        android:id="@+id/spinnerRole"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginBottom="12dp"
+                        android:entries="@array/roles_array" />
+
+                </LinearLayout>
+
+                <!-- Общие поля -->
+                <com.google.android.material.textfield.TextInputLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:hint="Email">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/etEmail"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="textEmailAddress" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <com.google.android.material.textfield.TextInputLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="20dp"
+                    android:hint="Пароль"
+                    app:passwordToggleEnabled="true"
+                    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/etPassword"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:inputType="textPassword" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <ProgressBar
+                    android:id="@+id/progressBar"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:layout_marginBottom="12dp"
+                    android:visibility="gone" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnLogin"
+                    android:layout_width="match_parent"
+                    android:layout_height="56dp"
+                    android:text="Войти"
+                    android:textSize="16sp" />
+
+                <TextView
+                    android:id="@+id/tvToggleMode"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:layout_marginTop="16dp"
+                    android:text="Нет аккаунта? Зарегистрироваться"
+                    android:textColor="#4F46E5"
+                    android:textSize="14sp" />
+
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+    </LinearLayout>
+</ScrollView>
+```
+
+### res/layout/activity_main.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <FrameLayout
+        android:id="@+id/fragmentContainer"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+    <com.google.android.material.bottomnavigation.BottomNavigationView
+        android:id="@+id/bottomNavigation"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@android:color/white"
+        app:elevation="8dp"
+        app:menu="@menu/bottom_nav_menu" />
+
+</LinearLayout>
+```
+
+### res/layout/fragment_chat_list.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F1F5F9">
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerViewChats"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <TextView
+        android:id="@+id/tvEmpty"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:text="💬 Нет чатов"
+        android:textColor="#94A3B8"
+        android:textSize="18sp"
+        android:visibility="gone" />
+
+</FrameLayout>
+```
+
+### res/layout/fragment_chat.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#F1F5F9">
+
+    <!-- Заголовок чата -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="64dp"
+        android:background="@android:color/white"
+        android:elevation="2dp"
+        android:gravity="center_vertical"
+        android:paddingHorizontal="16dp"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/tvChatTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Чат"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="#1E293B" />
+
+        <TextView
+            android:id="@+id/tvTyping"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#22C55E"
+            android:textSize="12sp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <!-- Список сообщений -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerViewMessages"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:padding="12dp"
+        android:clipToPadding="false" />
+
+    <!-- Поле ввода -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@android:color/white"
+        android:elevation="4dp"
+        android:gravity="center_vertical"
+        android:padding="8dp">
+
+        <EditText
+            android:id="@+id/etMessage"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_input"
+            android:hint="Сообщение..."
+            android:inputType="text"
+            android:maxLines="3"
+            android:paddingHorizontal="16dp"
+            android:textSize="14sp" />
+
+        <ImageButton
+            android:id="@+id/btnSend"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/bg_send_button"
+            android:contentDescription="Отправить"
+            android:src="@android:drawable/ic_menu_send"
+            android:tint="@android:color/white" />
+
+    </LinearLayout>
+
+</LinearLayout>
+```
+
+### res/layout/item_chat.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="?attr/selectableItemBackground"
+    android:gravity="center_vertical"
+    android:padding="12dp"
+    android:orientation="horizontal">
+
+    <!-- Аватар -->
+    <TextView
+        android:id="@+id/tvAvatar"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:background="@drawable/bg_avatar"
+        android:gravity="center"
+        android:text="A"
+        android:textColor="@android:color/white"
+        android:textSize="20sp"
+        android:textStyle="bold" />
+
+    <!-- Информация -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/tvChatName"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Имя чата"
+            android:textColor="#1E293B"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvLastMessage"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="Последнее сообщение"
+            android:textColor="#94A3B8"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!-- Мета -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:gravity="end"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/tvTime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="12:30"
+            android:textColor="#94A3B8"
+            android:textSize="11sp" />
+
+        <TextView
+            android:id="@+id/tvBadge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:background="@drawable/bg_badge"
+            android:paddingHorizontal="6dp"
+            android:paddingVertical="2dp"
+            android:textColor="@android:color/white"
+            android:textSize="10sp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+</LinearLayout>
+```
+
+### res/layout/item_message_sent.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="end"
+    android:paddingVertical="2dp">
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_message_sent"
+        android:maxWidth="280dp"
+        android:orientation="vertical"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="8dp">
+
+        <TextView
+            android:id="@+id/tvMessageContent"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@android:color/white"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/tvMessageTime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end"
+            android:textColor="#FFFFFFAA"
+            android:textSize="10sp" />
+    </LinearLayout>
+
+</LinearLayout>
+```
+
+### res/layout/item_message_received.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="start"
+    android:paddingVertical="2dp">
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_message_received"
+        android:maxWidth="280dp"
+        android:orientation="vertical"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="8dp">
+
+        <TextView
+            android:id="@+id/tvSenderName"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#2563EB"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvMessageContent"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#1E293B"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/tvMessageTime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end"
+            android:textColor="#94A3B8"
+            android:textSize="10sp" />
+    </LinearLayout>
+
+</LinearLayout>
+```
+
+### res/layout/item_message_system.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center"
+    android:paddingVertical="4dp">
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_message_system"
+        android:orientation="vertical"
+        android:paddingHorizontal="16dp"
+        android:paddingVertical="6dp">
+
+        <TextView
+            android:id="@+id/tvMessageContent"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:textColor="#92400E"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/tvMessageTime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:textColor="#B45309"
+            android:textSize="10sp" />
+    </LinearLayout>
+
+</LinearLayout>
+```
+
+### res/layout/item_order.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_margin="8dp"
+    app:cardCornerRadius="12dp"
+    app:cardElevation="2dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/tvOrderNumber"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#2563EB"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvAddresses"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="#64748B"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/tvCustomer"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textColor="#64748B"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/tvStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvCourier"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:textColor="#64748B"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnAction"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:layout_marginTop="8dp"
+            android:textSize="13sp"
+            android:visibility="gone"
+            app:cornerRadius="8dp" />
+
+    </LinearLayout>
+
+</com.google.android.material.card.MaterialCardView>
+```
+
+### res/layout/fragment_orders.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F1F5F9">
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerViewOrders"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:padding="4dp"
+        android:clipToPadding="false" />
+
+    <TextView
+        android:id="@+id/tvEmptyOrders"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:text="📦 Нет заказов"
+        android:textColor="#94A3B8"
+        android:textSize="18sp"
+        android:visibility="gone" />
+
+</FrameLayout>
+```
+
+### res/menu/bottom_nav_menu.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/nav_chats"
+        android:icon="@android:drawable/sym_action_chat"
+        android:title="Чаты" />
+    <item
+        android:id="@+id/nav_orders"
+        android:icon="@android:drawable/ic_menu_agenda"
+        android:title="Заказы" />
+    <item
+        android:id="@+id/nav_logout"
+        android:icon="@android:drawable/ic_menu_close_clear_cancel"
+        android:title="Выйти" />
+</menu>
+```
+
+### res/values/strings.xml
+
+```xml
+<resources>
+    <string name="app_name">Courier Messenger</string>
+    <string-array name="roles_array">
+        <item>Курьер</item>
+        <item>Диспетчер</item>
+    </string-array>
+</resources>
+```
+
+### res/values/colors.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#2563EB</color>
+    <color name="primary_dark">#1D4ED8</color>
+    <color name="accent">#7C3AED</color>
+    <color name="success">#22C55E</color>
+    <color name="warning">#F59E0B</color>
+    <color name="danger">#EF4444</color>
+    <color name="background">#F1F5F9</color>
+    <color name="text_primary">#1E293B</color>
+    <color name="text_secondary">#94A3B8</color>
+</resources>
+```
+
+### res/values/themes.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.CourierMessenger" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="colorPrimary">@color/primary</item>
+        <item name="colorPrimaryDark">@color/primary_dark</item>
+        <item name="colorAccent">@color/accent</item>
+        <item name="android:statusBarColor">@color/primary_dark</item>
+    </style>
+</resources>
+```
+
+### res/drawable/bg_avatar.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="#2563EB" />
+</shape>
+```
+
+### res/drawable/bg_badge.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#2563EB" />
+    <corners android:radius="10dp" />
+</shape>
+```
+
+### res/drawable/bg_input.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#F1F5F9" />
+    <corners android:radius="22dp" />
+    <stroke android:width="1dp" android:color="#E2E8F0" />
+</shape>
+```
+
+### res/drawable/bg_send_button.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="#2563EB" />
+</shape>
+```
+
+### res/drawable/bg_message_sent.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#2563EB" />
+    <corners
+        android:bottomLeftRadius="18dp"
+        android:bottomRightRadius="4dp"
+        android:topLeftRadius="18dp"
+        android:topRightRadius="18dp" />
+</shape>
+```
+
+### res/drawable/bg_message_received.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@android:color/white" />
+    <stroke android:width="1dp" android:color="#E2E8F0" />
+    <corners
+        android:bottomLeftRadius="4dp"
+        android:bottomRightRadius="18dp"
+        android:topLeftRadius="18dp"
+        android:topRightRadius="18dp" />
+</shape>
+```
+
+### res/drawable/bg_message_system.xml
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FEF3C7" />
+    <stroke android:width="1dp" android:color="#FDE68A" />
+    <corners android:radius="8dp" />
+</shape>
+```
+
+---
+
+## Схема перекрёстной валидации моделей
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              ПЕРЕКРЁСТНАЯ ВАЛИДАЦИЯ МОДЕЛЕЙ                 │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ⭐ DeliveryStatus ПРОВЕРЯЕТ Order:                        │
+│  ┌──────────────────┐     ┌──────────────────┐             │
+│  │  DeliveryStatus   │────>│      Order       │             │
+│  │  (pre-save hook)  │     │                  │             │
+│  └──────────────────┘     └──────────────────┘             │
+│                                                             │
+│  Проверки:                                                  │
+│  1. Заказ существует в БД                                   │
+│  2. previousStatus совпадает с текущим order.status         │
+│  3. Переход статуса допустим (order.canTransitionTo())      │
+│  4. Пользователь имеет право менять статус                  │
+│  5. Курьер назначен (для picked_up, in_transit, delivered)  │
+│  6. Нет более нового обновления статуса                     │
+│                                                             │
+│  ⭐ Message ПРОВЕРЯЕТ Chat:                                │
+│  ┌──────────────────┐     ┌──────────────────┐             │
+│  │    Message        │────>│      Chat        │             │
+│  │  (pre-save hook)  │     │                  │             │
+│  └──────────────────┘     └──────────────────┘             │
+│                                                             │
+│  Проверки:                                                  │
+│  1. Чат существует                                          │
+│  2. Чат активен (isActive)                                  │
+│  3. Отправитель — участник чата                             │
+│                                                             │
+│  ⭐ Chat ПРОВЕРЯЕТ Order:                                  │
+│  ┌──────────────────┐     ┌──────────────────┐             │
+│  │      Chat         │────>│      Order       │             │
+│  │  (pre-save hook)  │     │                  │             │
+│  └──────────────────┘     └──────────────────┘             │
+│                                                             │
+│  Проверки:                                                  │
+│  1. Заказ существует (для type="order")                     │
+│  2. Статус заказа позволяет создать чат                     │
+│     (не cancelled/delivered)                                │
+│                                                             │
+│  ⭐ Order ПРОВЕРЯЕТ User:                                  │
+│  ┌──────────────────┐     ┌──────────────────┐             │
+│  │      Order        │────>│      User        │             │
+│  │  (pre-save hook)  │     │                  │             │
+│  └──────────────────┘     └──────────────────┘             │
+│                                                             │
+│  Проверки:                                                  │
+│  1. Курьер существует и имеет role="courier"                │
+│  2. Диспетчер существует и имеет role="dispatcher"/"admin"  │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Запуск проекта
+
+```bash
+# 1. Запуск MongoDB
+mongod --dbpath /data/db
+
+# 2. Запуск сервера
+cd server
+npm install
+npm run dev
+# ✅ Сервер на http://localhost:5000
+
+# 3. Запуск веб-клиента
+cd web-client
+npm install
+npm start
+# ✅ Веб на http://localhost:3000
+
+# 4. Запуск Android-клиента
+# Открыть android-client/ в Android Studio → Run
+# ✅ Использует http://10.0.2.2:5000 (эмулятор → localhost)
+```
+
+```
+╔══════════════════════════════════════════════════════════╗
+║                  АРХИТЕКТУРА СИСТЕМЫ                     ║
+║                                                          ║
+║   ┌──────────┐     ┌──────────────┐     ┌──────────┐   ║
+║   │  React   │────>│   Express    │<────│ Android  │   ║
+║   │  Web App │     │  + Socket.IO │     │  Kotlin  │   ║
+║   │  :3000   │<────│    :5000     │────>│  App     │   ║
+║   └──────────┘     └──────┬───────┘     └──────────┘   ║
+║                           │                              ║
+║                    ┌──────┴───────┐                      ║
+║                    │   MongoDB    │                      ║
+║                    │  5 моделей   │                      ║
+║                    │  + валидация │                      ║
+║                    └──────────────┘                      ║
+║                                                          ║
+║  Модели: User, Chat, Message, Order, DeliveryStatus     ║
+║  Транспорт: REST API + WebSocket (Socket.IO)            ║
+║  Клиенты: React (Web) + Kotlin (Android)                ║
+╚══════════════════════════════════════════════════════════╝
+```
