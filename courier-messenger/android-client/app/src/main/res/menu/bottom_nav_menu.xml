@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
     <item
-        android:id="@+id/nav_chats"
+        android:id="@+id/chatList"
         android:icon="@android:drawable/sym_action_chat"
         android:title="Чаты" />
     <item
-        android:id="@+id/nav_orders"
+        android:id="@+id/orders"
         android:icon="@android:drawable/ic_menu_agenda"
         android:title="Заказы" />
     <item

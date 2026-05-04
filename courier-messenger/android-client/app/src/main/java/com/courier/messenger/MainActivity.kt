@@ -41,6 +41,20 @@ class MainActivity : AppCompatActivity() {
         val navController = navHostFragment.navController
 
         binding.bottomNavigation.setupWithNavController(navController)
+
+        binding.bottomNavigation.setOnItemSelectedListener { item ->
+            when (item.itemId) {
+                R.id.nav_logout -> {
+                    logout()
+                    true
+                }
+                else -> {
+                    // Стандартная навигация через NavigationUI
+                    androidx.navigation.ui.NavigationUI.onNavDestinationSelected(item, navController)
+                    true
+                }
+            }
+        }
     }
 
     private fun connectSocket() {

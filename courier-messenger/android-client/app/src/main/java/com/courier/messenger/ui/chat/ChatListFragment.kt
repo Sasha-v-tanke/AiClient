@@ -26,6 +26,7 @@ class ChatListFragment : Fragment() {
     private val binding get() = _binding!!
     private val viewModel: ChatViewModel by activityViewModels()
     private lateinit var adapter: ChatAdapter
+    private var currentUser: User? = null
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -33,6 +34,17 @@ class ChatListFragment : Fragment() {
         savedInstanceState: Bundle?
     ): View {
         _binding = FragmentChatListBinding.inflate(inflater, container, false)
+        
+        // Предзагрузка пользователя для адаптера
+        try {
+            val userJson = RetrofitClient.loadUser(requireContext())
+            if (!userJson.isNullOrEmpty()) {
+                currentUser = Gson().fromJson(userJson, User::class.java)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        
         return binding.root
     }
 
@@ -49,7 +61,7 @@ class ChatListFragment : Fragment() {
     }
 
     private fun setupRecyclerView() {
-        adapter = ChatAdapter { chat ->
+        adapter = ChatAdapter(currentUser) { chat ->
             val bundle = Bundle().apply {
                 putString("chatId", chat._id)
                 putString("chatTitle", getChatTitle(chat))
@@ -62,9 +74,21 @@ class ChatListFragment : Fragment() {
 
     private fun observeViewModel() {
         viewModel.chats.observe(viewLifecycleOwner) { chats ->
-            adapter.submitList(chats)
+            val chatList = chats ?: emptyList()
+            android.util.Log.d("ChatListFragment", "Получено чатов: ${chatList.size}")
+            
+            adapter.submitList(chatList)
             binding.swipeRefresh.isRefreshing = false
-            binding.tvEmpty.visibility = if (chats.isEmpty()) View.VISIBLE else View.GONE
+            
+            if (chatList.isEmpty()) {
+                binding.tvEmpty.visibility = View.VISIBLE
+                binding.recyclerChats.visibility = View.GONE
+                android.util.Log.d("ChatListFragment", "Список пуст, показываю tvEmpty")
+            } else {
+                binding.tvEmpty.visibility = View.GONE
+                binding.recyclerChats.visibility = View.VISIBLE
+                android.util.Log.d("ChatListFragment", "Список не пуст, показываю RecyclerView")
+            }
         }
 
         viewModel.error.observe(viewLifecycleOwner) { error ->
@@ -75,18 +99,19 @@ class ChatListFragment : Fragment() {
         }
 
         viewModel.loading.observe(viewLifecycleOwner) { loading ->
-            if (!binding.swipeRefresh.isRefreshing) {
-                binding.progressBar.visibility = if (loading) View.VISIBLE else View.GONE
+            if (_binding != null && !binding.swipeRefresh.isRefreshing) {
+                binding.progressBar.visibility = if (loading == true) View.VISIBLE else View.GONE
             }
         }
     }
 
     private fun getChatTitle(chat: Chat): String {
-        val currentUserJson = RetrofitClient.loadUser(requireContext())
-        val currentUser = Gson().fromJson(currentUserJson, User::class.java)
-        return chat.participants
+        if (!chat.name.isNullOrBlank()) return chat.name
+        
+        val participants = chat.participants ?: return "Чат"
+        return participants
             .filter { it._id != currentUser?._id }
-            .joinToString(", ") { it.username }
+            .joinToString(", ") { it.username ?: "Аноним" }
             .ifEmpty { "Чат" }
     }
 
@@ -97,6 +122,7 @@ class ChatListFragment : Fragment() {
 }
 
 class ChatAdapter(
+    private val currentUser: User?,
     private val onChatClick: (Chat) -> Unit
 ) : RecyclerView.Adapter<ChatAdapter.ChatViewHolder>() {
 
@@ -126,13 +152,14 @@ class ChatAdapter(
     ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(chat: Chat) {
-            val currentUserJson = RetrofitClient.loadUser(binding.root.context)
-            val currentUser = Gson().fromJson(currentUserJson, User::class.java)
-
-            val title = chat.participants
-                .filter { it._id != currentUser?._id }
-                .joinToString(", ") { it.username }
-                .ifEmpty { "Чат" }
+            val title = if (!chat.name.isNullOrBlank()) {
+                chat.name
+            } else {
+                chat.participants
+                    ?.filter { it._id != currentUser?._id }
+                    ?.joinToString(", ") { it.username ?: "Аноним" }
+                    ?.ifEmpty { "Чат" } ?: "Чат"
+            }
 
             binding.tvChatName.text = title
             binding.tvLastMessage.text = chat.lastMessage?.content ?: "Нет сообщений"
@@ -143,8 +170,12 @@ class ChatAdapter(
                     val inputFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.getDefault())
                     inputFormat.timeZone = TimeZone.getTimeZone("UTC")
                     val date = inputFormat.parse(dateStr)
-                    val outputFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
-                    binding.tvTime.text = outputFormat.format(date!!)
+                    if (date != null) {
+                        val outputFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+                        binding.tvTime.text = outputFormat.format(date)
+                    } else {
+                        binding.tvTime.text = ""
+                    }
                 } catch (e: Exception) {
                     binding.tvTime.text = ""
                 }
